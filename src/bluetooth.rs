@@ -7,7 +7,7 @@ use crate::theme::Theme;
 use crate::timer::BluetoothEvent;
 use anyhow::{anyhow, Result};
 use egui::{
-    Color32, CtxRef, Direction, Label, Layout, Rect, ScrollArea, Sense, Stroke, Ui, Vec2, Window,
+    Color32, Direction, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke, Ui, Vec2, Window,
 };
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
@@ -163,17 +163,17 @@ impl BluetoothState {
         }
     }
 
-    pub fn start_connect_flow(&mut self, frame: &epi::Frame<'_>) {
+    pub fn start_connect_flow(&mut self, ctx: &egui::Context) {
         self.disconnect();
         self.mode = BluetoothMode::DiscoverDevices;
         if self.cube.is_none() {
             let cube = BluetoothCube::new();
 
-            let repaint_signal = frame.repaint_signal();
+            let repaint_ctx = ctx.clone();
             let move_queue = self.move_queue.clone();
             cube.register_move_listener(move |event| {
                 move_queue.lock().unwrap().push(event);
-                repaint_signal.request_repaint();
+                repaint_ctx.request_repaint();
             });
 
             self.cube = Some(cube);
@@ -195,7 +195,7 @@ impl BluetoothState {
 
             ui.add_space(16.0);
 
-            ScrollArea::from_max_height(350.0)
+            ScrollArea::vertical().max_height(350.0)
                 .id_source("bluetooth_device_list")
                 .show(ui, |ui| {
                     ui.visuals_mut().widgets.inactive.fg_stroke = Stroke {
@@ -216,8 +216,8 @@ impl BluetoothState {
                         for device in available_devices {
                             if ui
                                 .add(
-                                    Label::new(format!("⮊  {}", device.name))
-                                        .text_style(FontSize::Section.into())
+                                    Label::new(RichText::new(format!("⮊  {}", device.name))
+                                        .text_style(FontSize::Section.into()))
                                         .sense(Sense::click()),
                                 )
                                 .clicked()
@@ -233,7 +233,7 @@ impl BluetoothState {
                             at_least_one = true;
                         }
                         if !at_least_one {
-                            ui.add(Label::new("Searching...").text_color(Theme::Disabled));
+                            ui.add(Label::new(RichText::new("Searching...").color(Theme::Disabled)));
                         }
                     }
                 });
@@ -246,9 +246,9 @@ impl BluetoothState {
                 Layout::centered_and_justified(Direction::LeftToRight),
                 |ui| {
                     ui.add(
-                        Label::new("Connecting to cube...")
+                        Label::new(RichText::new("Connecting to cube...")
                             .text_style(FontSize::Section.into())
-                            .text_color(Theme::Disabled),
+                            .color(Theme::Disabled)),
                     );
                 },
             );
@@ -284,7 +284,7 @@ impl BluetoothState {
 
     fn check_state(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &mut Ui,
         framerate: &mut Framerate,
         cube_rect: &mut Option<Rect>,
@@ -307,8 +307,8 @@ impl BluetoothState {
                 };
                 if ui
                     .add(
-                        Label::new("✔  Yes")
-                            .text_style(FontSize::Section.into())
+                        Label::new(RichText::new("✔  Yes")
+                            .text_style(FontSize::Section.into()))
                             .sense(Sense::click()),
                     )
                     .clicked()
@@ -328,8 +328,8 @@ impl BluetoothState {
                 };
                 if ui
                     .add(
-                        Label::new("✖  No")
-                            .text_style(FontSize::Section.into())
+                        Label::new(RichText::new("✖  No")
+                            .text_style(FontSize::Section.into()))
                             .sense(Sense::click()),
                     )
                     .clicked()
@@ -345,14 +345,15 @@ impl BluetoothState {
             framerate.request_max();
 
             if ui.rect_contains_pointer(rect) {
-                let scroll_delta = ctxt.input().scroll_delta;
+                let scroll_delta = ctx.input(|i| i.raw_scroll_delta);
                 self.renderer
                     .adjust_angle(scroll_delta.x / 3.0, scroll_delta.y / 3.0);
             }
             if response.dragged() {
+                let delta = ui.input(|i| i.pointer.delta());
                 self.renderer.adjust_angle(
-                    ui.input().pointer.delta().x / 3.0,
-                    ui.input().pointer.delta().y / 3.0,
+                    delta.x / 3.0,
+                    delta.y / 3.0,
                 );
             }
         });
@@ -380,7 +381,7 @@ impl BluetoothState {
 
     fn reset_state(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &mut Ui,
         framerate: &mut Framerate,
         cube_rect: &mut Option<Rect>,
@@ -403,8 +404,8 @@ impl BluetoothState {
                 };
                 if ui
                     .add(
-                        Label::new("👍  I'm ready")
-                            .text_style(FontSize::Section.into())
+                        Label::new(RichText::new("👍  I'm ready")
+                            .text_style(FontSize::Section.into()))
                             .sense(Sense::click()),
                     )
                     .clicked()
@@ -426,14 +427,15 @@ impl BluetoothState {
             framerate.request_max();
 
             if ui.rect_contains_pointer(rect) {
-                let scroll_delta = ctxt.input().scroll_delta;
+                let scroll_delta = ctx.input(|i| i.raw_scroll_delta);
                 self.renderer
                     .adjust_angle(scroll_delta.x / 3.0, scroll_delta.y / 3.0);
             }
             if response.dragged() {
+                let delta = ui.input(|i| i.pointer.delta());
                 self.renderer.adjust_angle(
-                    ui.input().pointer.delta().x / 3.0,
-                    ui.input().pointer.delta().y / 3.0,
+                    delta.x / 3.0,
+                    delta.y / 3.0,
                 );
             }
         });
@@ -448,24 +450,23 @@ impl BluetoothState {
 
     fn show_error(&self, ui: &mut Ui) {
         if let Some(error) = &self.error {
-            ui.add(Label::new(error).text_color(Theme::Red));
+            ui.add(Label::new(RichText::new(error).color(Theme::Red)));
         }
     }
 
     pub fn update(
         &mut self,
-        ctxt: &CtxRef,
-        _frame: &mut epi::Frame<'_>,
+        ctx: &egui::Context,
         framerate: &mut Framerate,
         cube_rect: &mut Option<Rect>,
         open: &mut bool,
     ) {
-        ctxt.set_visuals(dialog_visuals());
+        ctx.set_visuals(dialog_visuals());
         Window::new("Connect")
             .fixed_size(Vec2::new(250.0, 300.0))
             .collapsible(false)
             .open(open)
-            .show(ctxt, |ui| {
+            .show(ctx, |ui| {
                 ui.set_min_size(Vec2::new(250.0, 300.0));
                 ui.set_max_size(Vec2::new(250.0, 300.0));
                 match self.mode {
@@ -478,7 +479,7 @@ impl BluetoothState {
                         }
                     },
                     BluetoothMode::CheckState => {
-                        match self.check_state(ctxt, ui, framerate, cube_rect) {
+                        match self.check_state(ctx, ui, framerate, cube_rect) {
                             Ok(_) => (),
                             Err(error) => {
                                 self.mode = BluetoothMode::Error;
@@ -487,7 +488,7 @@ impl BluetoothState {
                         }
                     }
                     BluetoothMode::ResetState => {
-                        match self.reset_state(ctxt, ui, framerate, cube_rect) {
+                        match self.reset_state(ctx, ui, framerate, cube_rect) {
                             Ok(_) => (),
                             Err(error) => {
                                 self.mode = BluetoothMode::Error;
@@ -505,10 +506,10 @@ impl BluetoothState {
 
     pub fn paint_cube(
         &mut self,
-        ctxt: &CtxRef,
-        gl: &mut GlContext<'_, '_>,
+        ctx: &egui::Context,
+        gl: &mut GlContext<'_>,
         rect: &Rect,
     ) -> Result<()> {
-        self.renderer.draw(ctxt, gl, rect)
+        self.renderer.draw(ctx, gl, rect)
     }
 }

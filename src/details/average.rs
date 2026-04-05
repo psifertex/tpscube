@@ -4,7 +4,7 @@ use crate::font::FontSize;
 use crate::style::dialog_visuals;
 use crate::theme::Theme;
 use crate::widgets::{date_string, solve_time_string};
-use egui::{CtxRef, CursorIcon, Label, Pos2, Rect, Sense, Vec2, Window};
+use egui::{Color32, CursorIcon, Label, Pos2, Rect, RichText, Sense, TextStyle, Vec2, Window};
 use std::cmp::Ordering;
 use tpscube_core::{
     Analysis, AnalysisStepSummary, AnalysisSummary, Cube, Cube3x3x3, CubeWithSolution,
@@ -89,8 +89,8 @@ impl AverageDetailsWindow {
         }
     }
 
-    pub fn update(&mut self, ctxt: &CtxRef, open: &mut bool, details: &mut Option<SolveDetails>) {
-        let full_rect = ctxt.available_rect();
+    pub fn update(&mut self, ctx: &egui::Context, open: &mut bool, details: &mut Option<SolveDetails>) {
+        let full_rect = ctx.available_rect();
         let target_width = (full_rect.width() - 64.0).min(TARGET_MAX_WIDTH);
 
         // Find the longest time in the set of solves. This will be used to layout
@@ -103,7 +103,7 @@ impl AverageDetailsWindow {
             }
         });
 
-        ctxt.set_visuals(dialog_visuals());
+        ctx.set_visuals(dialog_visuals());
 
         Window::new(format!(
             "Average of {} - {}",
@@ -112,33 +112,36 @@ impl AverageDetailsWindow {
         ))
         .collapsible(false)
         .resizable(false)
-        .scroll(true)
+        .scroll([false, true])
         .open(open)
-        .show(ctxt, |ui| {
+        .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 // Display average time at top
                 if let Some(average) = self.average {
-                    ui.add(
-                        Label::new(solve_time_string(average))
+                    ui.add(Label::new(
+                        RichText::new(solve_time_string(average))
                             .text_style(FontSize::BestTime.into())
-                            .text_color(Theme::Green),
-                    );
+                            .color(Theme::Green),
+                    ));
                     ui.add_space(8.0);
                 }
 
                 // Get maximum width of solve number
-                let galley = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
+                let font_id = Into::<TextStyle>::into(FontSize::Normal).resolve(ui.style());
+                let galley = ui.fonts(|f| f.layout_no_wrap(
                     format!("{}.   ", self.solves.len() + 1),
-                );
-                let solve_num_width = galley.size.x;
+                    font_id.clone(),
+                    Color32::PLACEHOLDER,
+                ));
+                let solve_num_width = galley.size().x;
 
                 // Get maximum width of solve time
-                let galley = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
+                let galley = ui.fonts(|f| f.layout_no_wrap(
                     format!("({})", solve_time_string(max_time)),
-                );
-                let solve_time_width = galley.size.x;
+                    font_id.clone(),
+                    Color32::PLACEHOLDER,
+                ));
+                let solve_time_width = galley.size().x;
 
                 // Compute column widths
                 let solve_bar_width =
@@ -147,17 +150,17 @@ impl AverageDetailsWindow {
                 let solve_bar_offset = target_width - solve_bar_width;
 
                 // Draw each solve
+                let normal_style: TextStyle = FontSize::Normal.into();
                 for (i, solve) in self.solves.iter().enumerate() {
                     let (id, rect) = ui.allocate_space(Vec2::new(
                         target_width,
-                        ui.fonts().row_height(FontSize::Normal.into()),
+                        ui.text_style_height(&normal_style),
                     ));
                     let response = ui.interact(rect, id, Sense::click());
 
                     // Draw solve number
                     let galley = ui
-                        .fonts()
-                        .layout_single_line(FontSize::Normal.into(), format!("{}.", i + 1));
+                        .fonts(|f| f.layout_no_wrap(format!("{}.", i + 1), font_id.clone(), Color32::PLACEHOLDER));
                     ui.painter()
                         .galley(rect.left_top(), galley, Theme::Disabled.into());
 
@@ -176,9 +179,9 @@ impl AverageDetailsWindow {
                     }
 
                     // Draw solve time
-                    let galley = ui.fonts().layout_single_line(FontSize::Normal.into(), time);
+                    let galley = ui.fonts(|f| f.layout_no_wrap(time, font_id.clone(), Color32::PLACEHOLDER));
                     ui.painter().galley(
-                        Pos2::new(rect.left() + solve_time_offset - galley.size.x, rect.top()),
+                        Pos2::new(rect.left() + solve_time_offset - galley.size().x, rect.top()),
                         galley,
                         if response.hovered() {
                             Theme::Blue.into()

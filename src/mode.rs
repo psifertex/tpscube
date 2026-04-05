@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use crate::widgets::CustomWidgets;
-use egui::{CtxRef, Label, Sense, Ui, Window};
+use egui::{Color32, Label, RichText, Sense, Ui, Window};
 use tpscube_core::SolveType;
 
 pub struct SolveTypeSelectWindow {
@@ -19,20 +19,21 @@ impl SolveTypeSelectWindow {
         solve_type: SolveType,
         name: &str,
     ) {
-        let mut label = Label::new(name).sense(Sense::click());
-        if self.solve_type == solve_type {
-            label = label.text_color(Theme::Green);
-        }
+        let label = if self.solve_type == solve_type {
+            Label::new(RichText::new(name).color(Into::<Color32>::into(Theme::Green))).sense(Sense::click())
+        } else {
+            Label::new(name).sense(Sense::click())
+        };
         if ui.add(label).clicked() {
             *selected = Some(solve_type);
         }
     }
 
-    pub fn update(&self, ctxt: &CtxRef, open: &mut bool, selected: &mut Option<SolveType>) {
+    pub fn update(&self, ctxt: &egui::Context, open: &mut bool, selected: &mut Option<SolveType>) {
         Window::new("Select Puzzle")
             .collapsible(false)
             .resizable(false)
-            .scroll(true)
+            .scroll([false, true])
             .open(open)
             .show(ctxt, |ui| {
                 ui.vertical(|ui| {

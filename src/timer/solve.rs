@@ -2,17 +2,19 @@ use crate::font::FontSize;
 use crate::framerate::Framerate;
 use crate::timer::scramble::TimerCube;
 use crate::timer::state::TimerState;
-use egui::{Pos2, Rect, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, TextStyle, Ui, Vec2};
 
 const TARGET_CUBE_FRACTION: f32 = 0.75;
 
 pub fn timer_ui(ui: &mut Ui, center: &Pos2, state: &TimerState) {
     // Render timer only in center of screen
-    let timer_height = ui.fonts().row_height(FontSize::Timer.into());
-    let galley = ui
-        .fonts()
-        .layout_single_line(FontSize::Timer.into(), state.current_time_string());
-    let timer_width = galley.size.x;
+    let timer_height = ui.text_style_height(&FontSize::Timer.into());
+    let font_id = TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Timer))
+        .resolve(ui.style());
+    let galley = ui.fonts(|f| {
+        f.layout_no_wrap(state.current_time_string(), font_id, Color32::PLACEHOLDER)
+    });
+    let timer_width = galley.size().x;
     ui.painter().galley(
         Pos2::new(center.x - timer_width / 2.0, center.y - timer_height / 2.0),
         galley,
@@ -30,7 +32,7 @@ pub fn bluetooth_timer_ui(
     framerate: &mut Framerate,
 ) {
     // In Bluetooth mode, render cube as well as timer
-    let timer_height = ui.fonts().row_height(FontSize::Timer.into());
+    let timer_height = ui.text_style_height(&FontSize::Timer.into());
     let timer_padding = 32.0;
     let cube_height = (rect.height() - timer_height - timer_padding) * TARGET_CUBE_FRACTION;
     let total_height = timer_height + timer_padding + cube_height;
@@ -50,10 +52,12 @@ pub fn bluetooth_timer_ui(
     }
 
     // Draw timer
-    let galley = ui
-        .fonts()
-        .layout_single_line(FontSize::Timer.into(), state.current_time_string());
-    let timer_width = galley.size.x;
+    let font_id = TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Timer))
+        .resolve(ui.style());
+    let galley = ui.fonts(|f| {
+        f.layout_no_wrap(state.current_time_string(), font_id, Color32::PLACEHOLDER)
+    });
+    let timer_width = galley.size().x;
     ui.painter().galley(
         Pos2::new(
             center.x - timer_width / 2.0,

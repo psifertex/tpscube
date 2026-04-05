@@ -1,7 +1,7 @@
-use crate::font::{FontSize, LabelFontSize};
+use crate::font::FontSize;
 use crate::theme::Theme;
 use chrono::{DateTime, Local};
-use egui::{widgets::Label, Color32, Pos2, Response, Sense, Stroke, Ui, Vec2};
+use egui::{widgets::Label, Color32, Pos2, Response, RichText, Sense, Stroke, TextStyle, Ui, Vec2};
 use tpscube_core::Move;
 
 const MIN_SCRAMBLE_LINES: usize = 2;
@@ -113,18 +113,18 @@ fn scramble_lines(scramble: &[Move], line_count: usize) -> Vec<Vec<Move>> {
 }
 
 pub fn fit_scramble(ui: &Ui, font: FontSize, scramble: &[Move], width: f32) -> Vec<Vec<Move>> {
+    let text_style: TextStyle = font.into();
+    let font_id = text_style.resolve(ui.style());
     for line_count in MIN_SCRAMBLE_LINES..MAX_SCRAMBLE_LINES {
         let lines = scramble_lines(scramble, line_count);
         if !lines.iter().any(|line| {
-            ui.fonts()
-                .layout_single_line(
-                    font.into(),
-                    line.iter()
-                        .map(|mv| mv.to_string())
-                        .collect::<Vec<String>>()
-                        .join("  "),
-                )
-                .size
+            let text = line
+                .iter()
+                .map(|mv| mv.to_string())
+                .collect::<Vec<String>>()
+                .join("  ");
+            ui.fonts(|f| f.layout_no_wrap(text, font_id.clone(), Color32::PLACEHOLDER))
+                .size()
                 .x
                 > width
         }) {
@@ -157,29 +157,33 @@ pub fn color_for_recognition_step_index(idx: usize) -> Color32 {
 impl CustomWidgets for Ui {
     fn header_label(&mut self, icon: &str, text: &str, landscape: bool, active: bool) -> Response {
         if landscape {
+            let label_text = format!("{}  {}", icon, text);
             self.add(
                 if active {
-                    Label::new(format!("{}  {}", icon, text)).text_color(Theme::Green)
+                    Label::new(RichText::new(label_text).color(Into::<Color32>::into(Theme::Green)))
                 } else {
-                    Label::new(format!("{}  {}", icon, text))
+                    Label::new(label_text)
                 }
                 .sense(Sense::click()),
             )
         } else {
             // In portrait mode, display icon with small text below
+            let icon_style: TextStyle = FontSize::Normal.into();
+            let icon_font_id = icon_style.resolve(self.style());
             let icon_galley = self
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), icon.into());
+                .fonts(|f| f.layout_no_wrap(icon.into(), icon_font_id, Color32::PLACEHOLDER));
+
+            let text_style: TextStyle = FontSize::Small.into();
+            let text_font_id = text_style.resolve(self.style());
             let text_galley = self
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), text.into());
+                .fonts(|f| f.layout_no_wrap(text.into(), text_font_id, Color32::PLACEHOLDER));
 
             let (response, painter) = self.allocate_painter(
-                Vec2::new(text_galley.size.x, icon_galley.size.y + text_galley.size.y),
+                Vec2::new(text_galley.size().x, icon_galley.size().y + text_galley.size().y),
                 Sense::click(),
             );
 
-            let icon_height = icon_galley.size.y;
+            let icon_height = icon_galley.size().y;
             let color = if active {
                 Theme::Green.into()
             } else if response.hovered() {
@@ -189,7 +193,7 @@ impl CustomWidgets for Ui {
             };
             painter.galley(
                 Pos2::new(
-                    response.rect.center().x - icon_galley.size.x / 2.0,
+                    response.rect.center().x - icon_galley.size().x / 2.0,
                     response.rect.top(),
                 ),
                 icon_galley,
@@ -209,11 +213,11 @@ impl CustomWidgets for Ui {
     fn mode_label(&mut self, text: &str, active: bool) -> Response {
         self.add(
             if active {
-                Label::new(format!("{}", text))
-                    .text_color(Theme::Green)
-                    .wrap(false)
+                Label::new(RichText::new(format!("{}", text)).color(Into::<Color32>::into(Theme::Green)))
+                    .wrap_mode(egui::TextWrapMode::Extend)
             } else {
-                Label::new(format!("{}", text)).wrap(false)
+                Label::new(format!("{}", text))
+                    .wrap_mode(egui::TextWrapMode::Extend)
             }
             .sense(Sense::click()),
         )
@@ -221,9 +225,11 @@ impl CustomWidgets for Ui {
 
     fn section(&mut self, text: &str) {
         self.add(
-            Label::new(text)
-                .font_size(FontSize::Section)
-                .text_color(Theme::Blue),
+            Label::new(
+                RichText::new(text)
+                    .text_style(FontSize::Section.into())
+                    .color(Into::<Color32>::into(Theme::Blue)),
+            ),
         );
         self.section_separator();
     }

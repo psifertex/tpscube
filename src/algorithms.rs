@@ -5,7 +5,7 @@ use crate::style::{content_visuals, side_visuals};
 use crate::theme::Theme;
 use crate::widgets::CustomWidgets;
 use egui::{
-    Align, CentralPanel, CtxRef, Direction, Layout, SidePanel, Stroke, TopBottomPanel, Ui, Vec2,
+    Align, CentralPanel, Direction, Layout, SidePanel, Stroke, TopBottomPanel, Ui, Vec2,
 };
 use report::TPSReport;
 use std::collections::HashMap;
@@ -168,11 +168,11 @@ impl AlgorithmsWidget {
         }
     }
 
-    fn landscape_sidebar(&mut self, ctxt: &CtxRef) {
+    fn landscape_sidebar(&mut self, ctx: &egui::Context) {
         SidePanel::left("left_algorithm_options")
             .default_width(160.0)
             .resizable(false)
-            .show(ctxt, |ui| {
+            .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     ui.section("Algorithms");
                     self.algorithm_options(ui);
@@ -184,8 +184,8 @@ impl AlgorithmsWidget {
             });
     }
 
-    fn portrait_top_bar(&mut self, ctxt: &CtxRef) {
-        TopBottomPanel::top("top_algorithm_options").show(ctxt, |ui| {
+    fn portrait_top_bar(&mut self, ctx: &egui::Context) {
+        TopBottomPanel::top("top_algorithm_options").show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.with_layout(
                     Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::TOP),
@@ -226,24 +226,24 @@ impl AlgorithmsWidget {
         });
     }
 
-    pub fn update(&mut self, ctxt: &CtxRef, _frame: &mut epi::Frame<'_>, history: &mut History) {
+    pub fn update(&mut self, ctx: &egui::Context, history: &mut History) {
         if self.cached_update_id != Some(history.update_id()) {
             self.cached_update_id = Some(history.update_id());
             self.analyze(history);
         }
 
-        ctxt.set_visuals(side_visuals());
-        let aspect = ctxt.available_rect().width() / ctxt.available_rect().height();
+        ctx.set_visuals(side_visuals());
+        let aspect = ctx.available_rect().width() / ctx.available_rect().height();
         if aspect >= 1.0 {
             // Landscape mode. Report options to the left.
-            self.landscape_sidebar(ctxt);
+            self.landscape_sidebar(ctx);
         } else {
             // Portrait mode. Report options at the top.
-            self.portrait_top_bar(ctxt);
+            self.portrait_top_bar(ctx);
         }
 
-        ctxt.set_visuals(content_visuals());
-        CentralPanel::default().show(ctxt, |ui| match self.mode {
+        ctx.set_visuals(content_visuals());
+        CentralPanel::default().show(ctx, |ui| match self.mode {
             AlgorithmMode::TPSReport(alg_type) => {
                 let report = TPSReport::new(&self.algorithm_stats, alg_type, &mut self.sort);
                 report.update(ui);

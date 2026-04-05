@@ -3,7 +3,7 @@ use crate::corner_generated::{CORNER_INDEX, CORNER_SOURCE_VERTS};
 use crate::edge_generated::{EDGE_INDEX, EDGE_SOURCE_VERTS};
 use crate::gl::{GlContext, GlRenderer, Vertex};
 use anyhow::Result;
-use egui::{CtxRef, Rect};
+use egui::Rect;
 use gl_matrix::{
     common::{to_radian, Mat4},
     mat4, vec3,
@@ -570,7 +570,7 @@ impl CubeRenderer {
         }
     }
 
-    pub fn draw(&mut self, ctxt: &CtxRef, gl: &mut GlContext<'_, '_>, rect: &Rect) -> Result<()> {
+    pub fn draw(&mut self, ctx: &egui::Context, gl: &mut GlContext<'_>, rect: &Rect) -> Result<()> {
         if self.renderer.is_none() {
             let mut renderer = GlRenderer::new(gl)?;
             renderer.set_camera_pos([0.0, 0.0, 5.0]);
@@ -605,7 +605,7 @@ impl CubeRenderer {
 
         // Draw cube
         let renderer = self.renderer.as_mut().unwrap();
-        renderer.begin(ctxt, gl, rect);
+        renderer.begin(ctx, gl, rect);
 
         // Set up fixed model matrix
         let mut model = [0.0; 16];

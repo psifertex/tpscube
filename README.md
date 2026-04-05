@@ -17,6 +17,38 @@ It is written in pure Rust using the [egui](https://github.com/emilk/egui) frame
 * Anything that runs a web browser with WebGL support
 * Windows / MacOS / Linux with a native binary (and without Electron!)
 
+# Building from source
+
+## Prerequisites
+
+### macOS
+- Install SDL2 via Homebrew: `brew install sdl2`
+- Create a `.cargo/config.toml` file in the project root with the following content:
+  ```toml
+  [target.aarch64-apple-darwin]
+  rustflags = ["-L", "/opt/homebrew/lib"]
+
+  [target.x86_64-apple-darwin]
+  rustflags = ["-L", "/opt/homebrew/lib"]
+  ```
+  Note: This file is gitignored as paths may vary between systems.
+
+### Other platforms
+- SDL2 should be available through your system's package manager
+
+## Building
+```bash
+cargo build --release
+make mac  # macOS only - creates app bundle
+```
+
+Run the binary directly:
+```bash
+./target/release/tpscube
+```
+
+Note: On macOS with Apple Silicon, you may see OpenGL texture warnings in the console (`GLD_TEXTURE_INDEX_2D is unloadable`). These can be safely ignored if the UI renders correctly.
+
 # Scrambling algortihms
 
 Popular scrambling algorithms, including the official WCA scramble, are licensed under GPLv3. Normally

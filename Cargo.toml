@@ -2,26 +2,34 @@
 name = "tpscube"
 version = "0.1.0"
 authors = ["Rusty Wagner <rusty.wagner@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "tpscube"
+path = "src/main.rs"
 
 [dependencies]
-egui = { version="0.13", default-features=false }
-epi = { version="0.13" }
-tpscube_core = { path="lib", default-features=false }
+egui = "0.31"
+eframe = { version = "0.31", default-features = false, features = ["wgpu"], optional = true }
+tpscube_core = { path = "lib", default-features = false }
 getrandom = "0.2"
 instant = "0.1"
 anyhow = "1.0"
 chrono = "0.4"
 gl_matrix = "0.0"
 num-traits = "0.2"
-image = { version="0.23", default-features=false, features=["png"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+wgpu = { version = "24", optional = true }
+egui-wgpu = { version = "0.31", optional = true }
+bytemuck = { version = "1.0", features = ["derive"] }
+pollster = "0.3"
+log = "0.4"
+env_logger = "0.10"
 
 [features]
-default = ["tpscube_core/native-storage", "tpscube_core/bluetooth"]
+default = ["tpscube_core/native-storage", "tpscube_core/bluetooth", "wgpu-backend"]
 wasm = ["getrandom/js", "tpscube_core/web-storage", "instant/wasm-bindgen", "chrono/wasmbind"]
+wgpu-backend = ["eframe", "wgpu", "egui-wgpu"]
 
 [profile.dev]
 opt-level = 2
@@ -30,7 +38,6 @@ opt-level = 2
 panic = "abort"
 
 [target.'cfg(target_arch="wasm32")'.dependencies]
-egui_web = { version="0.13", default-features=false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -77,8 +84,5 @@ features = [
 ]
 
 [target.'cfg(not(target_arch="wasm32"))'.dependencies]
-egui_glium = { version="0.13", default-features=false }
-glium = "0.30"
 tinyfiledialogs = "3.8"
-sdl2 = { version="0.34", features=["bundled", "static-link"] }
-tokio = { version="1.7", features=["full"] }
+tokio = { version = "1.7", features = ["full"] }

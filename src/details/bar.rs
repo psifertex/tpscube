@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use crate::widgets::{color_for_recognition_step_index, color_for_step_index};
-use egui::{CtxRef, Pos2, Rect, Response, Stroke, Ui, Vec2};
+use egui::{Pos2, Rect, Response, Stroke, Ui, Vec2};
 use tpscube_core::{AnalysisStepSummary, Solve};
 
 const SOLVE_BAR_HEIGHT: f32 = 4.0;
@@ -176,7 +176,7 @@ impl<'a> SolveBar<'a> {
 
     pub fn interactive(
         &self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &mut Ui,
         rect: Rect,
         response: Response,
@@ -185,7 +185,7 @@ impl<'a> SolveBar<'a> {
 
         // Check for click on solve bar and return that location
         if response.clicked() || response.dragged() {
-            if let Some(pos) = ctxt.input().pointer.interact_pos() {
+            if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
                 let frac = (pos.x - rect.left()) / rect.width();
                 let frac = frac.min(1.0).max(0.0);
                 return Some(self.max_time as f32 * frac / 1000.0);

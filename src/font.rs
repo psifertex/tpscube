@@ -1,5 +1,4 @@
-use egui::{widgets::Label, FontDefinitions, FontFamily, TextStyle};
-use std::borrow::Cow;
+use egui::{FontDefinitions, FontFamily, FontId, RichText, TextStyle};
 use std::collections::BTreeMap;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -38,90 +37,75 @@ impl Into<TextStyle> for FontSize {
     }
 }
 
-pub trait LabelFontSize {
-    fn font_size(self, size: FontSize) -> Self;
+/// Helper to create RichText with a specific font size
+pub fn sized_text(text: impl Into<String>, size: FontSize) -> RichText {
+    RichText::new(text).text_style(size.into())
 }
 
-impl LabelFontSize for Label {
-    fn font_size(self, size: FontSize) -> Self {
-        self.text_style(size.into())
-    }
-}
-
-pub fn font_definitions(screen_size: ScreenSize) -> FontDefinitions {
-    let mut fonts = FontDefinitions {
-        font_data: BTreeMap::new(),
-        fonts_for_family: BTreeMap::new(),
-        family_and_size: BTreeMap::new(),
-    };
+pub fn font_definitions() -> FontDefinitions {
+    let mut fonts = FontDefinitions::default();
 
     fonts.font_data.insert(
         "OpenSans".into(),
-        Cow::Borrowed(include_bytes!("../fonts/OpenSans-Regular.ttf")),
+        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Regular.ttf")).into(),
     );
     fonts.font_data.insert(
         "OpenSans Light".into(),
-        Cow::Borrowed(include_bytes!("../fonts/OpenSans-Light.ttf")),
+        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Light.ttf")).into(),
     );
     fonts.font_data.insert(
         "emoji-icon-font".into(),
-        Cow::Borrowed(include_bytes!("../fonts/emoji-icon-font.ttf")),
+        egui::FontData::from_static(include_bytes!("../fonts/emoji-icon-font.ttf")).into(),
     );
-    fonts.fonts_for_family.insert(
+    fonts.families.insert(
         FontFamily::Proportional,
         vec!["OpenSans".into(), "emoji-icon-font".into()],
     );
-    fonts.fonts_for_family.insert(
+    fonts.families.insert(
         FontFamily::Monospace,
         vec!["OpenSans Light".into(), "emoji-icon-font".into()],
     );
 
+    fonts
+}
+
+pub fn text_styles(screen_size: ScreenSize) -> BTreeMap<TextStyle, FontId> {
+    let mut styles = BTreeMap::new();
+
     if crate::is_mobile() == Some(true) {
-        fonts
-            .family_and_size
-            .insert(FontSize::Small.into(), (FontFamily::Proportional, 16.0));
-        fonts
-            .family_and_size
-            .insert(FontSize::Normal.into(), (FontFamily::Proportional, 24.0));
-        fonts
-            .family_and_size
-            .insert(FontSize::Section.into(), (FontFamily::Proportional, 30.0));
+        styles.insert(TextStyle::Small, FontId::new(16.0, FontFamily::Proportional));
+        styles.insert(TextStyle::Body, FontId::new(24.0, FontFamily::Proportional));
+        styles.insert(TextStyle::Heading, FontId::new(30.0, FontFamily::Proportional));
     } else {
-        fonts
-            .family_and_size
-            .insert(FontSize::Small.into(), (FontFamily::Proportional, 16.0));
-        fonts
-            .family_and_size
-            .insert(FontSize::Normal.into(), (FontFamily::Proportional, 20.0));
-        fonts
-            .family_and_size
-            .insert(FontSize::Section.into(), (FontFamily::Proportional, 24.0));
+        styles.insert(TextStyle::Small, FontId::new(16.0, FontFamily::Proportional));
+        styles.insert(TextStyle::Body, FontId::new(20.0, FontFamily::Proportional));
+        styles.insert(TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional));
     }
 
-    fonts.family_and_size.insert(
-        FontSize::Scramble.into(),
-        (
-            FontFamily::Monospace,
+    styles.insert(
+        TextStyle::Button,
+        FontId::new(
             match screen_size {
                 ScreenSize::Small => 32.0,
                 ScreenSize::Normal => 40.0,
                 ScreenSize::Large => 48.0,
                 ScreenSize::VeryLarge => 64.0,
             },
+            FontFamily::Monospace,
         ),
     );
-    fonts.family_and_size.insert(
-        FontSize::Timer.into(),
-        (
-            FontFamily::Monospace,
+    styles.insert(
+        TextStyle::Monospace,
+        FontId::new(
             match screen_size {
                 ScreenSize::Small => 80.0,
                 ScreenSize::Normal => 128.0,
                 ScreenSize::Large => 144.0,
                 ScreenSize::VeryLarge => 192.0,
             },
+            FontFamily::Monospace,
         ),
     );
 
-    fonts
+    styles
 }

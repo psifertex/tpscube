@@ -1,7 +1,7 @@
 use crate::algorithms::AlgorithmsWidget;
 use crate::details::average::AverageDetailsWindow;
 use crate::details::solve::SolveDetailsWindow;
-use crate::font::{font_definitions, ScreenSize};
+use crate::font::{font_definitions, text_styles, ScreenSize};
 use crate::framerate::Framerate;
 use crate::future::spawn_future;
 use crate::gl::GlContext;
@@ -15,12 +15,10 @@ use crate::timer::TimerWidget;
 use crate::widgets::CustomWidgets;
 use anyhow::Result;
 use egui::{
-    widgets::Label, CentralPanel, Color32, CtxRef, Event, Key, Layout, Rect, Rgba, Sense, Stroke,
-    TextureId, TopBottomPanel, Vec2,
+    widgets::Label, CentralPanel, Color32, Event, Key, Layout, Rect, RichText, Rgba, Sense,
+    Stroke, TopBottomPanel, Vec2,
 };
-use epi::RepaintSignal;
 use image::GenericImageView;
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 use tpscube_core::{History, HistoryLoadProgress, Solve, SolveType, SyncStatus};
 
@@ -53,7 +51,7 @@ pub struct Application {
     history: Option<History>,
     history_load_progress: Arc<Mutex<HistoryLoadProgress>>,
     loading_history: Arc<Mutex<Option<Result<Option<History>>>>>,
-    repaint_signal: Arc<Mutex<Option<Arc<dyn RepaintSignal>>>>,
+    repaint_context: Arc<Mutex<Option<egui::Context>>>,
     framerate: Option<Framerate>,
     timer_cube_rect: Option<Rect>,
     bluetooth_cube_rect: Option<Rect>,
@@ -83,7 +81,7 @@ struct Image {
     width: usize,
     height: usize,
     pixels: Vec<Color32>,
-    texture_id: Option<TextureId>,
+    texture: Option<egui::TextureHandle>,
 }
 
 enum IconState {
@@ -121,12 +119,11 @@ pub trait App {
         Color32::from_rgba_premultiplied(12, 12, 12, 180).into()
     }
 
-    fn setup(&mut self, _ctxt: &CtxRef) {}
-    fn save(&mut self, _storage: &dyn epi::Storage) {}
+    fn setup(&mut self, _ctx: &egui::Context) {}
     fn on_exit(&mut self) {}
     fn name(&self) -> &str;
-    fn update(&mut self, ctxt: &CtxRef, frame: &mut epi::Frame<'_>);
-    fn update_gl(&mut self, _ctxt: &CtxRef, _gl: &mut GlContext<'_, '_>) {}
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame);
+    fn update_gl(&mut self, _ctx: &egui::Context, _gl: &mut GlContext<'_>) {}
     fn screensaver_enabled(&self) -> bool {
         true
     }
@@ -138,8 +135,8 @@ impl Application {
         let history_load_progress_copy = history_load_progress.clone();
         let loading_history = Arc::new(Mutex::new(None));
         let loading_history_copy = loading_history.clone();
-        let repaint_signal = Arc::new(Mutex::new(None));
-        let repaint_signal_copy = repaint_signal.clone();
+        let repaint_context: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
+        let repaint_context_copy = repaint_context.clone();
         spawn_future(async move {
             *loading_history_copy.lock().unwrap() = Some(
                 History::open_with_progress(history_load_progress_copy)
@@ -149,10 +146,9 @@ impl Application {
 
             // Wake up UI thread now that history is loaded. If we beat the UI initialization, the
             // first frame will immediately recognize that it was complete.
-            let repaint_signal = repaint_signal_copy.lock().unwrap();
-            let repaint_signal: &Option<Arc<dyn RepaintSignal>> = repaint_signal.deref();
-            if let Some(repaint_signal) = repaint_signal {
-                repaint_signal.request_repaint();
+            let repaint_context = repaint_context_copy.lock().unwrap();
+            if let Some(ctx) = repaint_context.as_ref() {
+                ctx.request_repaint();
             }
         });
 
@@ -178,7 +174,7 @@ impl Application {
             history: None,
             history_load_progress,
             loading_history,
-            repaint_signal,
+            repaint_context,
             framerate: None,
             timer_cube_rect: None,
             bluetooth_cube_rect: None,
@@ -201,32 +197,32 @@ impl Application {
         })
     }
 
-    fn populate_repaint_signal(&self, frame: &mut epi::Frame<'_>) {
-        let mut repaint_signal = self.repaint_signal.lock().unwrap();
-        let repaint_signal: &mut Option<Arc<dyn RepaintSignal>> = repaint_signal.deref_mut();
-        if repaint_signal.is_none() {
-            *repaint_signal = Some(frame.repaint_signal());
+    fn populate_repaint_context(&self, ctx: &egui::Context) {
+        let mut repaint_context = self.repaint_context.lock().unwrap();
+        if repaint_context.is_none() {
+            *repaint_context = Some(ctx.clone());
         }
     }
 }
 
 impl App for Application {
-    fn setup(&mut self, ctxt: &CtxRef) {
-        ctxt.set_fonts(font_definitions(self.screen_size));
-        ctxt.set_visuals(base_visuals());
+    fn setup(&mut self, ctx: &egui::Context) {
+        ctx.set_fonts(font_definitions());
+        ctx.style_mut(|s| s.text_styles = text_styles(self.screen_size));
+        ctx.set_visuals(base_visuals());
     }
 
     fn name(&self) -> &str {
         "TPS Cube"
     }
 
-    fn update(&mut self, ctxt: &CtxRef, frame: &mut epi::Frame<'_>) {
-        let aspect = ctxt.available_rect().width() / ctxt.available_rect().height();
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let aspect = ctx.available_rect().width() / ctx.available_rect().height();
         let landscape = aspect > 1.0;
         let effective_height = if landscape {
-            ctxt.available_rect().height()
+            ctx.available_rect().height()
         } else {
-            ctxt.available_rect().height() * 0.75
+            ctx.available_rect().height() * 0.75
         };
         let new_screen_size = if effective_height < 540.0 {
             ScreenSize::Small
@@ -240,12 +236,13 @@ impl App for Application {
 
         if self.screen_size != new_screen_size {
             self.screen_size = new_screen_size;
-            ctxt.set_fonts(font_definitions(self.screen_size));
+            ctx.set_fonts(font_definitions());
+            ctx.style_mut(|s| s.text_styles = text_styles(self.screen_size));
         }
 
         if self.history.is_some() {
-            ctxt.set_visuals(header_visuals());
-            TopBottomPanel::top("header").show(ctxt, |ui| {
+            ctx.set_visuals(header_visuals());
+            TopBottomPanel::top("header").show(ctx, |ui| {
                 ui.vertical(|ui| {
                     ui.add_space(5.0);
 
@@ -323,7 +320,7 @@ impl App for Application {
 
                         // Show icons on the right of the header
                         ui.style_mut().spacing.item_spacing.x = 12.0;
-                        ui.with_layout(Layout::right_to_left(), |ui| {
+                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                             // Show sync button
                             if self.history.as_ref().unwrap().sync_in_progress() {
                                 ui.style_mut().visuals.widgets.inactive.fg_stroke = Stroke {
@@ -356,10 +353,13 @@ impl App for Application {
 
                             // Show bluetooth button
                             #[cfg(not(target_arch = "wasm32"))]
-                            if let Some(texture_id) = self.bluetooth_icon.texture(frame) {
+                            if let Some(tex) = self.bluetooth_icon.texture(ctx) {
                                 let response = ui.add(
-                                    egui::Image::new(texture_id, Vec2::new(20.0, 20.0))
-                                        .sense(Sense::click()),
+                                    egui::Image::new(egui::load::SizedTexture::new(
+                                        tex.id(),
+                                        Vec2::new(20.0, 20.0),
+                                    ))
+                                    .sense(Sense::click()),
                                 );
                                 if response.hovered() {
                                     self.bluetooth_icon.state = IconState::Hovered;
@@ -373,21 +373,22 @@ impl App for Application {
                                         self.bluetooth.disconnect();
                                     } else {
                                         self.bluetooth_dialog_open = true;
-                                        self.bluetooth.start_connect_flow(frame);
+                                        self.bluetooth.start_connect_flow(ctx);
                                     }
                                 }
                                 response.on_hover_ui(|ui| {
-                                    ui.add(
-                                        Label::new(self.bluetooth.status())
-                                            .text_color(self.bluetooth.status_color()),
-                                    );
+                                    ui.add(Label::new(
+                                        RichText::new(self.bluetooth.status())
+                                            .color(self.bluetooth.status_color()),
+                                    ));
                                 });
                             }
 
                             // Check for storage errors
                             if let Some(error) = self.history.as_ref().unwrap().check_for_error() {
                                 ui.add(
-                                    Label::new("⚠").text_color(Theme::Red).sense(Sense::hover()),
+                                    Label::new(RichText::new("⚠").color(Theme::Red))
+                                        .sense(Sense::hover()),
                                 )
                                 .on_hover_text(error);
                             }
@@ -417,7 +418,7 @@ impl App for Application {
             let framerate = if let Some(framerate) = &mut self.framerate {
                 framerate
             } else {
-                self.framerate = Some(Framerate::new(frame.repaint_signal().clone()));
+                self.framerate = Some(Framerate::new(ctx.clone()));
                 self.framerate.as_mut().unwrap()
             };
 
@@ -459,8 +460,7 @@ impl App for Application {
                         };
 
                     self.timer_widget.update(
-                        ctxt,
-                        frame,
+                        ctx,
                         self.history.as_mut().unwrap(),
                         bluetooth_state,
                         bluetooth_events,
@@ -473,25 +473,23 @@ impl App for Application {
                     )
                 }
                 Mode::History => self.history_widget.update(
-                    ctxt,
-                    frame,
+                    ctx,
                     self.history.as_mut().unwrap(),
                     &mut details,
                     self.solve_type,
                 ),
                 Mode::Graphs => self.graph_widget.update(
-                    ctxt,
-                    frame,
+                    ctx,
                     self.history.as_mut().unwrap(),
                     self.solve_type,
                 ),
                 Mode::Algorithms => {
                     self.algorithms_widget
-                        .update(ctxt, frame, self.history.as_mut().unwrap())
+                        .update(ctx, self.history.as_mut().unwrap())
                 }
                 Mode::Settings => {
                     self.settings_widget
-                        .update(ctxt, frame, self.history.as_mut().unwrap())
+                        .update(ctx, self.history.as_mut().unwrap())
                 }
             }
 
@@ -506,7 +504,8 @@ impl App for Application {
             }
 
             let mut escape_down = false;
-            for event in &ctxt.input().events {
+            let events = ctx.input(|i| i.events.clone());
+            for event in &events {
                 match event {
                     Event::Key { key, pressed, .. } => {
                         if *pressed {
@@ -523,7 +522,7 @@ impl App for Application {
             if let Some(solve_details) = &mut self.solve_details {
                 let mut open = true;
                 solve_details.update(
-                    ctxt,
+                    ctx,
                     framerate,
                     &mut self.solve_details_cube_rect,
                     &mut open,
@@ -534,7 +533,7 @@ impl App for Application {
             } else if let Some(average_details) = &mut self.average_details {
                 let mut open = true;
                 let mut details = None;
-                average_details.update(ctxt, &mut open, &mut details);
+                average_details.update(ctx, &mut open, &mut details);
                 if !open || escape_down {
                     self.average_details = None;
                 }
@@ -548,7 +547,7 @@ impl App for Application {
             } else if let Some(solve_type_select) = &self.solve_type_select {
                 let mut open = true;
                 let mut selection = None;
-                solve_type_select.update(ctxt, &mut open, &mut selection);
+                solve_type_select.update(ctx, &mut open, &mut selection);
                 if !open || escape_down || selection.is_some() {
                     self.solve_type_select = None;
                 }
@@ -570,8 +569,7 @@ impl App for Application {
             if self.bluetooth_dialog_open {
                 let mut open = true;
                 self.bluetooth.update(
-                    ctxt,
-                    frame,
+                    ctx,
                     framerate,
                     &mut self.bluetooth_cube_rect,
                     &mut open,
@@ -591,16 +589,16 @@ impl App for Application {
             if self.first_frame {
                 // On some devices the 3D elements don't render properly on the first frame. Render
                 // a second frame immediately.
-                ctxt.request_repaint();
+                ctx.request_repaint();
                 self.first_frame = false;
             }
         } else {
             let mut error = None;
 
-            // Give history loading future access to the repaint signal. If the history load is
-            // already completed, it is OK that it did not have the repaint signal yet because
+            // Give history loading future access to the repaint context. If the history load is
+            // already completed, it is OK that it did not have the context yet because
             // we are going to immediately complete the load.
-            self.populate_repaint_signal(frame);
+            self.populate_repaint_context(ctx);
 
             // Check for history load completion
             let mut loading_history = self.loading_history.lock().unwrap();
@@ -623,16 +621,18 @@ impl App for Application {
                     )
                     .unwrap_or(SolveType::Standard3x3x3);
 
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 } else if let Err(load_error) = result {
                     error = Some(load_error.to_string());
                 }
             }
 
-            CentralPanel::default().show(ctxt, |ui| {
+            CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
                     if let Some(error) = error {
-                        ui.add(Label::new(format!("Error: {}", error)).text_color(Theme::Red));
+                        ui.add(Label::new(
+                            RichText::new(format!("Error: {}", error)).color(Theme::Red),
+                        ));
                     } else {
                         let progress = *self.history_load_progress.lock().unwrap();
 
@@ -652,37 +652,37 @@ impl App for Application {
                                     }
                                 }
 
-                                ui.add(
-                                    Label::new("Initializing database...")
-                                        .text_color(Theme::Disabled),
-                                );
+                                ui.add(Label::new(
+                                    RichText::new("Initializing database...")
+                                        .color(Theme::Disabled),
+                                ));
                             }
                             HistoryLoadProgress::ReadSyncedActions => {
-                                ui.add(
-                                    Label::new(format!(
+                                ui.add(Label::new(
+                                    RichText::new(format!(
                                         "Reading synced solves... ({:.0}%)",
                                         progress.approximate_percent_done()
                                     ))
-                                    .text_color(Theme::Disabled),
-                                );
+                                    .color(Theme::Disabled),
+                                ));
                             }
                             HistoryLoadProgress::ReadLocalActions => {
-                                ui.add(
-                                    Label::new(format!(
+                                ui.add(Label::new(
+                                    RichText::new(format!(
                                         "Reading local solves... ({:.0}%)",
                                         progress.approximate_percent_done()
                                     ))
-                                    .text_color(Theme::Disabled),
-                                );
+                                    .color(Theme::Disabled),
+                                ));
                             }
                             HistoryLoadProgress::ResolveDeltas(_, _) => {
-                                ui.add(
-                                    Label::new(format!(
+                                ui.add(Label::new(
+                                    RichText::new(format!(
                                         "Resolving deltas... ({:.0}%)",
                                         progress.approximate_percent_done()
                                     ))
-                                    .text_color(Theme::Disabled),
-                                );
+                                    .color(Theme::Disabled),
+                                ));
                             }
                         }
                     }
@@ -693,7 +693,7 @@ impl App for Application {
             let framerate = if let Some(framerate) = &mut self.framerate {
                 framerate
             } else {
-                self.framerate = Some(Framerate::new(frame.repaint_signal().clone()));
+                self.framerate = Some(Framerate::new(ctx.clone()));
                 self.framerate.as_mut().unwrap()
             };
             framerate.request(Some(10));
@@ -702,41 +702,41 @@ impl App for Application {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn update_gl(&mut self, ctxt: &CtxRef, gl: &mut GlContext<'_, '_>) {
+    fn update_gl(&mut self, ctx: &egui::Context, gl: &mut GlContext<'_>) {
         if self.bluetooth_dialog_open {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(rect) = &self.bluetooth_cube_rect {
-                self.bluetooth.paint_cube(ctxt, gl, rect).unwrap();
+                self.bluetooth.paint_cube(ctx, gl, rect).unwrap();
             }
         } else if self.solve_details.is_some() {
             if let Some(rect) = &self.solve_details_cube_rect {
                 if let Some(solve_details) = &mut self.solve_details {
-                    solve_details.paint_cube(ctxt, gl, rect).unwrap();
+                    solve_details.paint_cube(ctx, gl, rect).unwrap();
                 }
             }
         } else if self.average_details.is_none() && self.solve_type_select.is_none() {
             if let Some(rect) = &self.timer_cube_rect {
-                self.timer_widget.paint_cube(ctxt, gl, rect).unwrap();
+                self.timer_widget.paint_cube(ctx, gl, rect).unwrap();
             }
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn update_gl(&mut self, ctxt: &CtxRef, gl: &mut GlContext<'_, '_>) {
+    fn update_gl(&mut self, ctx: &egui::Context, gl: &mut GlContext<'_>) {
         if self.bluetooth_dialog_open {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(rect) = &self.bluetooth_cube_rect {
-                self.bluetooth.paint_cube(ctxt, gl, rect).unwrap();
+                self.bluetooth.paint_cube(ctx, gl, rect).unwrap();
             }
         } else if self.solve_details.is_some() {
             if let Some(rect) = &self.solve_details_cube_rect {
                 if let Some(solve_details) = &mut self.solve_details {
-                    solve_details.paint_cube(ctxt, gl, rect).unwrap();
+                    solve_details.paint_cube(ctx, gl, rect).unwrap();
                 }
             }
         } else if self.average_details.is_none() && self.solve_type_select.is_none() {
             if let Some(rect) = &self.timer_cube_rect {
-                self.timer_widget.paint_cube(ctxt, gl, rect).unwrap();
+                self.timer_widget.paint_cube(ctx, gl, rect).unwrap();
             }
         }
     }
@@ -758,20 +758,23 @@ impl ErrorApplication {
 }
 
 impl App for ErrorApplication {
-    fn setup(&mut self, ctxt: &CtxRef) {
-        ctxt.set_fonts(font_definitions(ScreenSize::Normal));
-        ctxt.set_visuals(base_visuals());
+    fn setup(&mut self, ctx: &egui::Context) {
+        ctx.set_fonts(font_definitions());
+        ctx.style_mut(|s| s.text_styles = text_styles(ScreenSize::Normal));
+        ctx.set_visuals(base_visuals());
     }
 
     fn name(&self) -> &str {
         "TPS Cube"
     }
 
-    fn update(&mut self, ctxt: &CtxRef, _frame: &mut epi::Frame<'_>) {
-        ctxt.set_visuals(content_visuals());
-        CentralPanel::default().show(ctxt, |ui| {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(content_visuals());
+        CentralPanel::default().show(ctx, |ui| {
             ui.centered_and_justified(|ui| {
-                ui.add(Label::new(format!("Error: {}", self.message)).text_color(Theme::Red));
+                ui.add(Label::new(
+                    RichText::new(format!("Error: {}", self.message)).color(Theme::Red),
+                ));
             })
         });
     }
@@ -792,30 +795,28 @@ impl Image {
             width,
             height,
             pixels,
-            texture_id: None,
+            texture: None,
         })
     }
 
-    fn texture(&mut self, frame: &mut epi::Frame<'_>) -> Option<TextureId> {
-        if let Some(texture_id) = self.texture_id {
-            Some(texture_id)
-        } else {
-            self.texture_id = Some(
-                frame
-                    .tex_allocator()
-                    .alloc_srgba_premultiplied((self.width, self.height), &self.pixels),
-            );
-            self.texture_id
+    fn texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.texture.is_none() {
+            let image = egui::ColorImage {
+                size: [self.width, self.height],
+                pixels: self.pixels.clone(),
+            };
+            self.texture = Some(ctx.load_texture("icon", image, egui::TextureOptions::default()));
         }
+        self.texture.as_ref()
     }
 }
 
 impl Icon {
-    fn texture(&mut self, frame: &mut epi::Frame<'_>) -> Option<TextureId> {
+    fn texture(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         match self.state {
-            IconState::Inactive => self.inactive.texture(frame),
-            IconState::Hovered => self.hover.texture(frame),
-            IconState::Active => self.active.texture(frame),
+            IconState::Inactive => self.inactive.texture(ctx),
+            IconState::Hovered => self.hover.texture(ctx),
+            IconState::Active => self.active.texture(ctx),
         }
     }
 }

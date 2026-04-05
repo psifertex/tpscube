@@ -4,8 +4,8 @@ use crate::style::content_visuals;
 use crate::theme::Theme;
 use crate::widgets::{date_string, solve_time_string};
 use egui::{
-    containers::ScrollArea, popup_below_widget, Align2, CentralPanel, CtxRef, CursorIcon, Pos2,
-    Rect, SelectableLabel, Sense, Stroke, Ui, Vec2,
+    containers::ScrollArea, Align2, CentralPanel, Color32, CursorIcon, Pos2,
+    Rect, RichText, SelectableLabel, Sense, Stroke, TextStyle, Ui, Vec2,
 };
 use tpscube_core::{
     Average, BestSolve, History, ListAverage, Penalty, Solve, SolveList, SolveType,
@@ -83,6 +83,17 @@ struct SolveLayoutMetrics {
     solve_content_width: f32,
 }
 
+/// Helper to get row height for a FontSize
+fn row_height(ui: &Ui, font_size: FontSize) -> f32 {
+    ui.text_style_height(&font_size.into())
+}
+
+/// Helper to get a galley from ui.fonts closure
+fn layout_no_wrap(ui: &Ui, font_size: FontSize, text: String) -> std::sync::Arc<egui::epaint::text::Galley> {
+    let font_id = { let ts: TextStyle = font_size.into(); ts }.resolve(ui.style());
+    ui.fonts(|f| f.layout_no_wrap(text, font_id, Color32::PLACEHOLDER))
+}
+
 impl HistoryRegion for NoSolvesRegion {
     fn height(&self, ui: &Ui, _layout_metrics: &SolveLayoutMetrics) -> f32 {
         ui.max_rect().height() - 32.0
@@ -97,17 +108,19 @@ impl HistoryRegion for NoSolvesRegion {
         _all_time_best: &Option<AllTimeBestRegion>,
         _details: &mut Option<SolveDetails>,
     ) {
-        let galley = ui.fonts().layout_multiline(
-            FontSize::Section.into(),
+        let font_id = Into::<TextStyle>::into(FontSize::Section).resolve(ui.style());
+        let galley = ui.fonts(|f| f.layout(
             "There are no solves available. If you have other devices to sync with, \
             set your sync key in Settings."
                 .into(),
+            font_id,
+            Color32::PLACEHOLDER,
             rect.width(),
-        );
+        ));
         ui.painter().galley(
             Pos2::new(
-                rect.center().x - galley.size.x / 2.0,
-                rect.center().y - galley.size.y / 2.0,
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y - galley.size().y / 2.0,
             ),
             galley,
             Theme::Disabled.into(),
@@ -141,8 +154,8 @@ impl HistoryRegion for AllTimeBestRegion {
     fn height(&self, ui: &Ui, layout_metrics: &SolveLayoutMetrics) -> f32 {
         let rows = (self.columns() + layout_metrics.best_columns - 1) / layout_metrics.best_columns;
         rows as f32
-            * (ui.fonts().row_height(FontSize::Normal.into())
-                + ui.fonts().row_height(FontSize::BestTime.into())
+            * (row_height(ui, FontSize::Normal)
+                + row_height(ui, FontSize::BestTime)
                 + BEST_TIME_ROW_PADDING)
             - BEST_TIME_ROW_PADDING
     }
@@ -175,27 +188,23 @@ impl HistoryRegion for AllTimeBestRegion {
 
         // Draw best solve
         if let Some(solve) = &self.best_solve {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best solve".into());
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best solve".into());
             ui.painter().galley(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
                     y,
                 ),
                 galley,
                 Theme::Content.into(),
             );
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), solve_time_string(solve.time));
+            let galley = layout_no_wrap(ui, FontSize::BestTime, solve_time_string(solve.time));
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
-                    y + ui.fonts().row_height(FontSize::Normal.into()),
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
+                    y + row_height(ui, FontSize::Normal),
                 ),
-                galley.size,
+                galley.size(),
             );
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
@@ -225,34 +234,30 @@ impl HistoryRegion for AllTimeBestRegion {
                     * (layout_metrics.best_solve_width + BEST_TIME_COL_PADDING)
                     - BEST_TIME_COL_PADDING)
                     / 2.0;
-            y += ui.fonts().row_height(FontSize::Normal.into())
-                + ui.fonts().row_height(FontSize::BestTime.into())
+            y += row_height(ui, FontSize::Normal)
+                + row_height(ui, FontSize::BestTime)
                 + BEST_TIME_ROW_PADDING;
         }
 
         // Draw best average of 5
         if let Some(average) = &self.best_ao5 {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 5".into());
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 5".into());
             ui.painter().galley(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
                     y,
                 ),
                 galley,
                 Theme::Content.into(),
             );
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), solve_time_string(average.time));
+            let galley = layout_no_wrap(ui, FontSize::BestTime, solve_time_string(average.time));
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
-                    y + ui.fonts().row_height(FontSize::Normal.into()),
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
+                    y + row_height(ui, FontSize::Normal),
                 ),
-                galley.size,
+                galley.size(),
             );
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
@@ -282,34 +287,30 @@ impl HistoryRegion for AllTimeBestRegion {
                     * (layout_metrics.best_solve_width + BEST_TIME_COL_PADDING)
                     - BEST_TIME_COL_PADDING)
                     / 2.0;
-            y += ui.fonts().row_height(FontSize::Normal.into())
-                + ui.fonts().row_height(FontSize::BestTime.into())
+            y += row_height(ui, FontSize::Normal)
+                + row_height(ui, FontSize::BestTime)
                 + BEST_TIME_ROW_PADDING;
         }
 
         // Draw best average of 12
         if let Some(average) = &self.best_ao12 {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 12".into());
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 12".into());
             ui.painter().galley(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
                     y,
                 ),
                 galley,
                 Theme::Content.into(),
             );
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), solve_time_string(average.time));
+            let galley = layout_no_wrap(ui, FontSize::BestTime, solve_time_string(average.time));
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
-                    y + ui.fonts().row_height(FontSize::Normal.into()),
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
+                    y + row_height(ui, FontSize::Normal),
                 ),
-                galley.size,
+                galley.size(),
             );
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
@@ -339,34 +340,30 @@ impl HistoryRegion for AllTimeBestRegion {
                     * (layout_metrics.best_solve_width + BEST_TIME_COL_PADDING)
                     - BEST_TIME_COL_PADDING)
                     / 2.0;
-            y += ui.fonts().row_height(FontSize::Normal.into())
-                + ui.fonts().row_height(FontSize::BestTime.into())
+            y += row_height(ui, FontSize::Normal)
+                + row_height(ui, FontSize::BestTime)
                 + BEST_TIME_ROW_PADDING;
         }
 
         // Draw best average of 50
         if let Some(average) = &self.best_ao50 {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 50".into());
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 50".into());
             ui.painter().galley(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
                     y,
                 ),
                 galley,
                 Theme::Content.into(),
             );
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), solve_time_string(average.time));
+            let galley = layout_no_wrap(ui, FontSize::BestTime, solve_time_string(average.time));
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
-                    y + ui.fonts().row_height(FontSize::Normal.into()),
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
+                    y + row_height(ui, FontSize::Normal),
                 ),
-                galley.size,
+                galley.size(),
             );
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
@@ -396,34 +393,30 @@ impl HistoryRegion for AllTimeBestRegion {
                     * (layout_metrics.best_solve_width + BEST_TIME_COL_PADDING)
                     - BEST_TIME_COL_PADDING)
                     / 2.0;
-            y += ui.fonts().row_height(FontSize::Normal.into())
-                + ui.fonts().row_height(FontSize::BestTime.into())
+            y += row_height(ui, FontSize::Normal)
+                + row_height(ui, FontSize::BestTime)
                 + BEST_TIME_ROW_PADDING;
         }
 
         // Draw best average of 100
         if let Some(average) = &self.best_ao100 {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 100".into());
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 100".into());
             ui.painter().galley(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
                     y,
                 ),
                 galley,
                 Theme::Content.into(),
             );
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), solve_time_string(average.time));
+            let galley = layout_no_wrap(ui, FontSize::BestTime, solve_time_string(average.time));
             let rect = Rect::from_min_size(
                 Pos2::new(
-                    x + layout_metrics.best_solve_width / 2.0 - galley.size.x / 2.0,
-                    y + ui.fonts().row_height(FontSize::Normal.into()),
+                    x + layout_metrics.best_solve_width / 2.0 - galley.size().x / 2.0,
+                    y + row_height(ui, FontSize::Normal),
                 ),
-                galley.size,
+                galley.size(),
             );
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
@@ -450,28 +443,21 @@ impl HistoryRegion for SessionRegion {
         let mut x = 0.0;
         let mut lines = 1;
         if let Some(best_solve) = &self.best_solve {
-            x += ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best solve: ".into())
-                .size
+            x += layout_no_wrap(ui, FontSize::Normal, "Best solve: ".into())
+                .size()
                 .x;
-            x += ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_solve.time))
-                .size
+            x += layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_solve.time))
+                .size()
                 .x
                 + SESSION_BEST_PADDING;
         }
 
         if let Some(best_ao5) = &self.best_ao5 {
-            let width = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 5: ".into())
-                .size
+            let width = layout_no_wrap(ui, FontSize::Normal, "Best avg of 5: ".into())
+                .size()
                 .x
-                + ui.fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao5.time))
-                    .size
+                + layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao5.time))
+                    .size()
                     .x
                 + SESSION_BEST_PADDING;
             if (x + width) > layout_metrics.solve_content_width {
@@ -482,14 +468,11 @@ impl HistoryRegion for SessionRegion {
         }
 
         if let Some(best_ao12) = &self.best_ao12 {
-            let width = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 12: ".into())
-                .size
+            let width = layout_no_wrap(ui, FontSize::Normal, "Best avg of 12: ".into())
+                .size()
                 .x
-                + ui.fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao12.time))
-                    .size
+                + layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao12.time))
+                    .size()
                     .x
                 + SESSION_BEST_PADDING;
             if (x + width) > layout_metrics.solve_content_width {
@@ -500,14 +483,11 @@ impl HistoryRegion for SessionRegion {
         }
 
         if let Some(best_ao50) = &self.best_ao50 {
-            let width = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 50: ".into())
-                .size
+            let width = layout_no_wrap(ui, FontSize::Normal, "Best avg of 50: ".into())
+                .size()
                 .x
-                + ui.fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao50.time))
-                    .size
+                + layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao50.time))
+                    .size()
                     .x
                 + SESSION_BEST_PADDING;
             if (x + width) > layout_metrics.solve_content_width {
@@ -518,14 +498,11 @@ impl HistoryRegion for SessionRegion {
         }
 
         if let Some(best_ao100) = &self.best_ao100 {
-            let width = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 100: ".into())
-                .size
+            let width = layout_no_wrap(ui, FontSize::Normal, "Best avg of 100: ".into())
+                .size()
                 .x
-                + ui.fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao100.time))
-                    .size
+                + layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao100.time))
+                    .size()
                     .x
                 + SESSION_BEST_PADDING;
             if (x + width) > layout_metrics.solve_content_width {
@@ -536,22 +513,19 @@ impl HistoryRegion for SessionRegion {
         }
 
         if let Some(average) = &self.average {
-            let width = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Session avg: ".into())
-                .size
+            let width = layout_no_wrap(ui, FontSize::Normal, "Session avg: ".into())
+                .size()
                 .x
-                + ui.fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(*average))
-                    .size
+                + layout_no_wrap(ui, FontSize::Normal, solve_time_string(*average))
+                    .size()
                     .x;
             if (x + width) > layout_metrics.solve_content_width {
                 lines += 1;
             }
         }
 
-        ui.fonts().row_height(FontSize::Normal.into()) * ((self.rows + lines) as f32)
-            + ui.fonts().row_height(FontSize::Section.into())
+        row_height(ui, FontSize::Normal) * ((self.rows + lines) as f32)
+            + row_height(ui, FontSize::Section)
             + SESSION_REGION_BORDER
             + SESSION_SEPARATOR_SIZE * 2.0
     }
@@ -607,11 +581,9 @@ impl HistoryRegion for SessionRegion {
             } else {
                 name.clone()
             };
-            let name_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Section.into(), string);
+            let name_galley = layout_no_wrap(ui, FontSize::Section, string);
 
-            if name_galley.size.x > content_area.width() {
+            if name_galley.size().x > content_area.width() {
                 name.pop();
                 truncated = true;
                 continue;
@@ -623,7 +595,7 @@ impl HistoryRegion for SessionRegion {
         }
 
         // Draw separator between name and solve list
-        let mut y = content_area.top() + ui.fonts().row_height(FontSize::Section.into());
+        let mut y = content_area.top() + row_height(ui, FontSize::Section);
         ui.painter().line_segment(
             [
                 Pos2::new(content_area.left(), y + SESSION_SEPARATOR_SIZE / 2.0),
@@ -638,8 +610,13 @@ impl HistoryRegion for SessionRegion {
 
         // Draw solves
         let col_width = layout_metrics.total_solve_width + SESSION_SEPARATOR_SIZE;
-        let row_height = ui.fonts().row_height(FontSize::Normal.into());
+        let rh = row_height(ui, FontSize::Normal);
         let mut i = 0;
+
+        // Resolve font_ids for painter.text calls
+        let normal_font_id = Into::<TextStyle>::into(FontSize::Normal).resolve(ui.style());
+        let small_font_id = Into::<TextStyle>::into(FontSize::Small).resolve(ui.style());
+
         for col in 0..layout_metrics.solve_columns {
             if i >= self.solves.len() {
                 break;
@@ -650,23 +627,20 @@ impl HistoryRegion for SessionRegion {
                 ui.painter().text(
                     Pos2::new(
                         content_area.left() + col as f32 * col_width,
-                        y + row as f32 * row_height,
+                        y + row as f32 * rh,
                     ),
                     Align2::LEFT_TOP,
                     format!("{}.", i + 1),
-                    FontSize::Normal.into(),
+                    normal_font_id.clone(),
                     Theme::Disabled.into(),
                 );
 
                 // Layout solve time for right alignment
                 let time = self.solves[i].final_time();
-                let galley = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
-                    match time {
-                        Some(time) => solve_time_string(time),
-                        None => "DNF".into(),
-                    },
-                );
+                let galley = layout_no_wrap(ui, FontSize::Normal, match time {
+                    Some(time) => solve_time_string(time),
+                    None => "DNF".into(),
+                });
 
                 let solve_time_rect = Rect::from_min_size(
                     Pos2::new(
@@ -674,10 +648,10 @@ impl HistoryRegion for SessionRegion {
                             + col as f32 * col_width
                             + layout_metrics.solve_number_width
                             + layout_metrics.solve_time_width
-                            - galley.size.x,
-                        y + row as f32 * row_height,
+                            - galley.size().x,
+                        y + row as f32 * rh,
                     ),
-                    galley.size,
+                    galley.size(),
                 );
 
                 // Draw solve time
@@ -716,12 +690,12 @@ impl HistoryRegion for SessionRegion {
                                 + col as f32 * col_width
                                 + layout_metrics.solve_number_width
                                 + layout_metrics.solve_time_width,
-                            y + row as f32 * row_height
-                                + ui.fonts().row_height(FontSize::Normal.into()),
+                            y + row as f32 * rh
+                                + row_height(ui, FontSize::Normal),
                         ),
                         Align2::LEFT_BOTTOM,
                         format!(" (+{})", penalty / 1000),
-                        FontSize::Small.into(),
+                        small_font_id.clone(),
                         Theme::Red.into(),
                     );
                 } else if self.solves[i].moves.is_some() {
@@ -732,13 +706,13 @@ impl HistoryRegion for SessionRegion {
                                 + col as f32 * col_width
                                 + layout_metrics.solve_number_width
                                 + layout_metrics.solve_time_width,
-                            y + row as f32 * row_height
-                                + ui.fonts().row_height(FontSize::Normal.into())
-                                - ui.fonts().row_height(FontSize::Small.into()),
+                            y + row as f32 * rh
+                                + row_height(ui, FontSize::Normal)
+                                - row_height(ui, FontSize::Small),
                         ),
                         Vec2::new(
                             layout_metrics.solve_penalty_width,
-                            ui.fonts().row_height(FontSize::Small.into()),
+                            row_height(ui, FontSize::Small),
                         ),
                     );
                     ui.allocate_rect(icon_rect, Sense::hover())
@@ -747,7 +721,7 @@ impl HistoryRegion for SessionRegion {
                         icon_rect.left_bottom(),
                         Align2::LEFT_BOTTOM,
                         "   📊",
-                        FontSize::Small.into(),
+                        small_font_id.clone(),
                         Theme::Light.into(),
                     );
                 }
@@ -760,13 +734,13 @@ impl HistoryRegion for SessionRegion {
                             + layout_metrics.solve_number_width
                             + layout_metrics.solve_time_width
                             + layout_metrics.solve_penalty_width,
-                        y + row as f32 * row_height
-                            + ui.fonts().row_height(FontSize::Normal.into())
-                            - ui.fonts().row_height(FontSize::Small.into()),
+                        y + row as f32 * rh
+                            + row_height(ui, FontSize::Normal)
+                            - row_height(ui, FontSize::Small),
                     ),
                     Vec2::new(
                         layout_metrics.solve_menu_width,
-                        ui.fonts().row_height(FontSize::Small.into()),
+                        row_height(ui, FontSize::Small),
                     ),
                 );
                 let interact = ui.allocate_rect(menu_rect, Sense::click());
@@ -774,7 +748,7 @@ impl HistoryRegion for SessionRegion {
                     Pos2::new(menu_rect.left(), menu_rect.bottom()),
                     Align2::LEFT_BOTTOM,
                     " ☰",
-                    FontSize::Small.into(),
+                    small_font_id.clone(),
                     if interact.hovered() {
                         Theme::Content.into()
                     } else {
@@ -785,11 +759,11 @@ impl HistoryRegion for SessionRegion {
                 // Check for menu interaction
                 let popup_id = ui.make_persistent_id(format!("history-{}", self.solves[i].id));
                 if interact.clicked() {
-                    ui.memory().toggle_popup(popup_id);
+                    ui.memory_mut(|m| m.toggle_popup(popup_id));
                 }
                 let old_visuals = ui.ctx().style().visuals.clone();
                 ui.ctx().set_visuals(crate::style::popup_visuals());
-                popup_below_widget(ui, popup_id, &interact, |ui| {
+                egui::popup_below_widget(ui, popup_id, &interact, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                     ui.set_min_width(180.0);
                     if ui
                         .add(
@@ -798,9 +772,8 @@ impl HistoryRegion for SessionRegion {
                                     Penalty::None => true,
                                     _ => false,
                                 },
-                                "No penalty",
-                            )
-                            .text_style(FontSize::Normal.into()),
+                                RichText::new("No penalty").text_style(FontSize::Normal.into()),
+                            ),
                         )
                         .clicked()
                     {
@@ -815,9 +788,8 @@ impl HistoryRegion for SessionRegion {
                                     Penalty::Time(2000) => true,
                                     _ => false,
                                 },
-                                "2 second penalty",
-                            )
-                            .text_style(FontSize::Normal.into()),
+                                RichText::new("2 second penalty").text_style(FontSize::Normal.into()),
+                            ),
                         )
                         .clicked()
                     {
@@ -832,9 +804,8 @@ impl HistoryRegion for SessionRegion {
                                     Penalty::DNF => true,
                                     _ => false,
                                 },
-                                "DNF",
-                            )
-                            .text_style(FontSize::Normal.into()),
+                                RichText::new("DNF").text_style(FontSize::Normal.into()),
+                            ),
                         )
                         .clicked()
                     {
@@ -846,8 +817,7 @@ impl HistoryRegion for SessionRegion {
 
                     if ui
                         .add(
-                            SelectableLabel::new(false, "Delete solve")
-                                .text_style(FontSize::Normal.into()),
+                            SelectableLabel::new(false, RichText::new("Delete solve").text_style(FontSize::Normal.into())),
                         )
                         .clicked()
                     {
@@ -871,7 +841,7 @@ impl HistoryRegion for SessionRegion {
             ui.painter().line_segment(
                 [
                     Pos2::new(x, y),
-                    Pos2::new(x, y + self.rows as f32 * row_height),
+                    Pos2::new(x, y + self.rows as f32 * rh),
                 ],
                 Stroke {
                     width: 1.0,
@@ -879,7 +849,7 @@ impl HistoryRegion for SessionRegion {
                 },
             );
         }
-        y += self.rows as f32 * row_height;
+        y += self.rows as f32 * rh;
 
         // Draw separator between solves and best times
         ui.painter().line_segment(
@@ -898,19 +868,15 @@ impl HistoryRegion for SessionRegion {
         let mut x = content_area.left();
         let max_x = x + layout_metrics.solve_content_width;
         if let Some(best_solve) = &self.best_solve {
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best solve: ".into());
-            let width = galley.size.x;
+            let galley = layout_no_wrap(ui, FontSize::Normal, "Best solve: ".into());
+            let width = galley.size().x;
             ui.painter()
                 .galley(Pos2::new(x, y), galley, Theme::Disabled.into());
             x += width;
 
-            let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_solve.time));
-            let width = galley.size.x;
-            let rect = Rect::from_min_size(Pos2::new(x, y), galley.size);
+            let galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_solve.time));
+            let width = galley.size().x;
+            let rect = Rect::from_min_size(Pos2::new(x, y), galley.size());
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
                 rect.left_top(),
@@ -933,24 +899,20 @@ impl HistoryRegion for SessionRegion {
 
         // Draw best average of 5
         if let Some(best_ao5) = &self.best_ao5 {
-            let label_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 5: ".into());
-            let time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao5.time));
-            let label_width = label_galley.size.x;
-            let time_width = time_galley.size.x;
+            let label_galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 5: ".into());
+            let time_galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao5.time));
+            let label_width = label_galley.size().x;
+            let time_width = time_galley.size().x;
             let width = label_width + time_width + SESSION_BEST_PADDING;
 
             if (x + width) > max_x {
                 x = content_area.left();
-                y += ui.fonts().row_height(FontSize::Normal.into());
+                y += row_height(ui, FontSize::Normal);
             }
 
             ui.painter()
                 .galley(Pos2::new(x, y), label_galley, Theme::Disabled.into());
-            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size);
+            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size());
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
                 rect.left_top(),
@@ -973,24 +935,20 @@ impl HistoryRegion for SessionRegion {
 
         // Draw best average of 12
         if let Some(best_ao12) = &self.best_ao12 {
-            let label_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 12: ".into());
-            let time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao12.time));
-            let label_width = label_galley.size.x;
-            let time_width = time_galley.size.x;
+            let label_galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 12: ".into());
+            let time_galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao12.time));
+            let label_width = label_galley.size().x;
+            let time_width = time_galley.size().x;
             let width = label_width + time_width + SESSION_BEST_PADDING;
 
             if (x + width) > max_x {
                 x = content_area.left();
-                y += ui.fonts().row_height(FontSize::Normal.into());
+                y += row_height(ui, FontSize::Normal);
             }
 
             ui.painter()
                 .galley(Pos2::new(x, y), label_galley, Theme::Disabled.into());
-            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size);
+            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size());
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
                 rect.left_top(),
@@ -1013,24 +971,20 @@ impl HistoryRegion for SessionRegion {
 
         // Draw best average of 50
         if let Some(best_ao50) = &self.best_ao50 {
-            let label_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 50: ".into());
-            let time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao50.time));
-            let label_width = label_galley.size.x;
-            let time_width = time_galley.size.x;
+            let label_galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 50: ".into());
+            let time_galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao50.time));
+            let label_width = label_galley.size().x;
+            let time_width = time_galley.size().x;
             let width = label_width + time_width + SESSION_BEST_PADDING;
 
             if (x + width) > max_x {
                 x = content_area.left();
-                y += ui.fonts().row_height(FontSize::Normal.into());
+                y += row_height(ui, FontSize::Normal);
             }
 
             ui.painter()
                 .galley(Pos2::new(x, y), label_galley, Theme::Disabled.into());
-            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size);
+            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size());
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
                 rect.left_top(),
@@ -1053,24 +1007,20 @@ impl HistoryRegion for SessionRegion {
 
         // Draw best average of 100
         if let Some(best_ao100) = &self.best_ao100 {
-            let label_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Best avg of 100: ".into());
-            let time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(best_ao100.time));
-            let label_width = label_galley.size.x;
-            let time_width = time_galley.size.x;
+            let label_galley = layout_no_wrap(ui, FontSize::Normal, "Best avg of 100: ".into());
+            let time_galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(best_ao100.time));
+            let label_width = label_galley.size().x;
+            let time_width = time_galley.size().x;
             let width = label_width + time_width + SESSION_BEST_PADDING;
 
             if (x + width) > max_x {
                 x = content_area.left();
-                y += ui.fonts().row_height(FontSize::Normal.into());
+                y += row_height(ui, FontSize::Normal);
             }
 
             ui.painter()
                 .galley(Pos2::new(x, y), label_galley, Theme::Disabled.into());
-            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size);
+            let rect = Rect::from_min_size(Pos2::new(x + label_width, y), time_galley.size());
             let interact = ui.allocate_rect(rect, Sense::click());
             ui.painter().galley(
                 rect.left_top(),
@@ -1093,19 +1043,15 @@ impl HistoryRegion for SessionRegion {
 
         // Draw session average
         if let Some(average) = &self.average {
-            let label_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Session avg: ".into());
-            let time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), solve_time_string(*average));
-            let label_width = label_galley.size.x;
-            let time_width = time_galley.size.x;
+            let label_galley = layout_no_wrap(ui, FontSize::Normal, "Session avg: ".into());
+            let time_galley = layout_no_wrap(ui, FontSize::Normal, solve_time_string(*average));
+            let label_width = label_galley.size().x;
+            let time_width = time_galley.size().x;
             let width = label_width + time_width;
 
             if (x + width) > max_x {
                 x = content_area.left();
-                y += ui.fonts().row_height(FontSize::Normal.into());
+                y += row_height(ui, FontSize::Normal);
             }
 
             ui.painter()
@@ -1293,50 +1239,39 @@ impl HistoryWidget {
 
     pub fn update(
         &mut self,
-        ctxt: &CtxRef,
-        _frame: &mut epi::Frame<'_>,
+        ctx: &egui::Context,
         history: &mut History,
         details: &mut Option<SolveDetails>,
         solve_type: SolveType,
     ) {
-        ctxt.set_visuals(content_visuals());
-        CentralPanel::default().show(ctxt, |ui| {
-            let number_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "9999.".into());
-            let solve_time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "9:59.99".into());
-            let solve_penalty_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), " (+2) ".into());
-            let solve_menu_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), " ☰".into());
-            let best_time_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::BestTime.into(), "99:59.99".into());
-            let total_solve_width = number_galley.size.x
-                + solve_time_galley.size.x
-                + solve_penalty_galley.size.x
-                + solve_menu_galley.size.x;
+        ctx.set_visuals(content_visuals());
+        CentralPanel::default().show(ctx, |ui| {
+            let number_galley = layout_no_wrap(ui, FontSize::Normal, "9999.".into());
+            let solve_time_galley = layout_no_wrap(ui, FontSize::Normal, "9:59.99".into());
+            let solve_penalty_galley = layout_no_wrap(ui, FontSize::Small, " (+2) ".into());
+            let solve_menu_galley = layout_no_wrap(ui, FontSize::Small, " ☰".into());
+            let best_time_galley = layout_no_wrap(ui, FontSize::BestTime, "99:59.99".into());
+            let total_solve_width = number_galley.size().x
+                + solve_time_galley.size().x
+                + solve_penalty_galley.size().x
+                + solve_menu_galley.size().x;
 
             let max_session_width =
                 ui.max_rect().width() - REGION_PADDING * 2.0 - SESSION_REGION_BORDER * 2.0;
             let solve_columns =
                 1.max((max_session_width / (total_solve_width + SESSION_SEPARATOR_SIZE)) as usize);
             let best_columns = 1.max(
-                (ui.max_rect().width() / (best_time_galley.size.x + BEST_TIME_COL_PADDING))
+                (ui.max_rect().width() / (best_time_galley.size().x + BEST_TIME_COL_PADDING))
                     as usize,
             );
 
             let solve_layout_metrics = SolveLayoutMetrics {
-                solve_number_width: number_galley.size.x,
-                solve_time_width: solve_time_galley.size.x,
-                solve_penalty_width: solve_penalty_galley.size.x,
-                solve_menu_width: solve_menu_galley.size.x,
+                solve_number_width: number_galley.size().x,
+                solve_time_width: solve_time_galley.size().x,
+                solve_penalty_width: solve_penalty_galley.size().x,
+                solve_menu_width: solve_menu_galley.size().x,
                 total_solve_width,
-                best_solve_width: best_time_galley.size.x,
+                best_solve_width: best_time_galley.size().x,
                 best_columns,
                 solve_columns,
                 solve_content_width: (solve_columns as f32
@@ -1359,7 +1294,7 @@ impl HistoryWidget {
             ui.visuals_mut().widgets.inactive.bg_fill = Theme::BackgroundHighlight.into();
             ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
             ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
-            ScrollArea::auto_sized()
+            ScrollArea::vertical()
                 .id_source("history")
                 .show_viewport(ui, |ui, viewport| {
                     let (rect, _) = ui.allocate_at_least(

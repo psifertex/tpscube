@@ -11,8 +11,8 @@ use crate::widgets::{
 };
 use anyhow::Result;
 use egui::{
-    Align, Color32, CtxRef, Direction, Event, Id, Key, Label, Layout, Pos2, Rect, Sense, Stroke,
-    Ui, Vec2, Window,
+    Align, Color32, Direction, Event, Id, Key, Label, Layout, Pos2, Rect, RichText, Sense, Stroke,
+    TextStyle, Ui, Vec2, Window,
 };
 use instant::Instant;
 use tpscube_core::{
@@ -173,13 +173,14 @@ impl SolveDetailsWindow {
         }
     }
 
-    fn replay_controls(&mut self, ctxt: &CtxRef, ui: &mut Ui) {
+    fn replay_controls(&mut self, ctx: &egui::Context, ui: &mut Ui) {
         let mut space_down = false;
         let mut left_down = false;
         let mut right_down = false;
         let mut home_down = false;
         let mut end_down = false;
-        for event in &ctxt.input().events {
+        let events = ctx.input(|i| i.events.clone());
+        for event in &events {
             match event {
                 Event::Key { key, pressed, .. } => {
                     if *pressed {
@@ -303,7 +304,7 @@ impl SolveDetailsWindow {
                 self.playing = false;
             }
 
-            ui.with_layout(Layout::right_to_left(), |ui| {
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.visuals_mut().widgets.noninteractive.fg_stroke = Stroke {
                     width: 1.0,
                     color: Theme::Content.into(),
@@ -311,22 +312,23 @@ impl SolveDetailsWindow {
 
                 // Get maximum size of time for replay
                 let total_ms = self.solve.moves.as_ref().unwrap().last().unwrap().time();
+                let font_id = Into::<TextStyle>::into(FontSize::Normal).resolve(ui.style());
                 let galley = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Normal.into(), solve_time_string(total_ms));
-                let (_, rect) = ui.allocate_space(galley.size);
+                    .fonts(|f| f.layout_no_wrap(solve_time_string(total_ms), font_id.clone(), Color32::PLACEHOLDER));
+                let (_, rect) = ui.allocate_space(galley.size());
 
                 // Show current time in replay. Don't use a label here so we can
                 // allocate a consistent amount of space for the time, regardless
                 // of where in the replay we are.
-                let galley = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
+                let galley = ui.fonts(|f| f.layout_no_wrap(
                     solve_time_string((self.replay_time * 1000.0) as u32),
-                );
+                    font_id,
+                    Color32::PLACEHOLDER,
+                ));
                 ui.painter().galley(
                     Pos2::new(
-                        rect.right() - galley.size.x,
-                        rect.center().y - galley.size.y / 2.0,
+                        rect.right() - galley.size().x,
+                        rect.center().y - galley.size().y / 2.0,
                     ),
                     galley,
                     Theme::Content.into(),
@@ -334,12 +336,12 @@ impl SolveDetailsWindow {
 
                 // Show scrub bar, which also acts as a breakdown of the various
                 // phases of the solve.
-                self.solve_bar(ctxt, ui);
+                self.solve_bar(ctx, ui);
             });
         });
     }
 
-    fn solve_bar(&mut self, ctxt: &CtxRef, ui: &mut Ui) {
+    fn solve_bar(&mut self, ctx: &egui::Context, ui: &mut Ui) {
         let (id, rect) = ui.allocate_space(Vec2::new(ui.available_width(), 16.0));
         let response = ui.interact(rect, id, Sense::click_and_drag());
         let bar = SolveBar::new(
@@ -348,14 +350,14 @@ impl SolveDetailsWindow {
             self.solve.moves.as_ref().unwrap().last().unwrap().time(),
             Some(self.replay_time),
         );
-        if let Some(navigate_time) = bar.interactive(ctxt, ui, rect, response) {
+        if let Some(navigate_time) = bar.interactive(ctx, ui, rect, response) {
             self.go_to_time(navigate_time);
         }
     }
 
     fn scramble_and_replay(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &mut Ui,
         target_width: f32,
         cube_size: f32,
@@ -372,21 +374,25 @@ impl SolveDetailsWindow {
                 let line: Vec<String> = line.iter().map(|mv| mv.to_string()).collect();
                 let line = line.join(" ");
                 ui.add(
-                    Label::new(line)
-                        .text_style(FontSize::Section.into())
-                        .text_color(Theme::Blue),
+                    Label::new(
+                        RichText::new(line)
+                            .text_style(FontSize::Section.into())
+                            .color(Theme::Blue),
+                    ),
                 );
             }
 
             // Add final time below scramble
             if let Some(time) = self.solve.final_time() {
-                ui.add(Label::new(solve_time_string(time)).text_style(FontSize::Scramble.into()));
+                ui.add(Label::new(
+                    RichText::new(solve_time_string(time)).text_style(FontSize::Scramble.into()),
+                ));
             } else {
-                ui.add(
-                    Label::new("DNF")
+                ui.add(Label::new(
+                    RichText::new("DNF")
                         .text_style(FontSize::Scramble.into())
-                        .text_color(Theme::Red),
-                );
+                        .color(Theme::Red),
+                ));
             }
 
             // Allocate space for the cube rendering, this will be rendered using
@@ -400,20 +406,21 @@ impl SolveDetailsWindow {
 
             // Process rotation input for the cube rendering
             if ui.rect_contains_pointer(rect) {
-                let scroll_delta = ctxt.input().scroll_delta;
+                let scroll_delta = ctx.input(|i| i.raw_scroll_delta);
                 self.renderer
                     .adjust_angle(scroll_delta.x / 3.0, scroll_delta.y / 3.0);
             }
             if response.dragged() {
+                let delta = ui.input(|i| i.pointer.delta());
                 self.renderer.adjust_angle(
-                    ui.input().pointer.delta().x / 3.0,
-                    ui.input().pointer.delta().y / 3.0,
+                    delta.x / 3.0,
+                    delta.y / 3.0,
                 );
             }
 
             if self.solve.moves.is_some() && self.solve.moves.as_ref().unwrap().len() > 0 {
                 // Solve has a solution associated with it, show replay controls
-                self.replay_controls(ctxt, ui);
+                self.replay_controls(ctx, ui);
             }
         });
     }
@@ -421,18 +428,17 @@ impl SolveDetailsWindow {
     fn solve_breakdown(&mut self, ui: &mut Ui, target_width: f32) {
         ui.vertical(|ui| {
             // Lay out column headers
+            let font_id_small = Into::<TextStyle>::into(FontSize::Small).resolve(ui.style());
+            let font_id_normal = Into::<TextStyle>::into(FontSize::Normal).resolve(ui.style());
+
             let step_name_header = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), "Step".into());
+                .fonts(|f| f.layout_no_wrap("Step".into(), font_id_small.clone(), Color32::PLACEHOLDER));
             let recognition_header = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), "Recognize".into());
+                .fonts(|f| f.layout_no_wrap("Recognize".into(), font_id_small.clone(), Color32::PLACEHOLDER));
             let execution_header = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), "Execute".into());
+                .fonts(|f| f.layout_no_wrap("Execute".into(), font_id_small.clone(), Color32::PLACEHOLDER));
             let move_count_header = ui
-                .fonts()
-                .layout_single_line(FontSize::Small.into(), "Moves".into());
+                .fonts(|f| f.layout_no_wrap("Moves".into(), font_id_small.clone(), Color32::PLACEHOLDER));
 
             // Go through all steps and lay out each to determine column widths
             let mut step_names = Vec::new();
@@ -440,14 +446,14 @@ impl SolveDetailsWindow {
             let mut recognitions = Vec::new();
             let mut executions = Vec::new();
             let mut move_counts = Vec::new();
-            let mut step_name_width: f32 = step_name_header.size.x;
+            let mut step_name_width: f32 = step_name_header.size().x;
             let mut recognition_width: f32 = if target_width > 320.0 {
-                recognition_header.size.x
+                recognition_header.size().x
             } else {
                 0.0
             };
-            let mut execution_width: f32 = execution_header.size.x;
-            let mut move_count_width: f32 = move_count_header.size.x;
+            let mut execution_width: f32 = execution_header.size().x;
+            let mut move_count_width: f32 = move_count_header.size().x;
             let mut max_step_time = 0;
             let mut total_recognition_time = 0;
             let mut total_execution_time = 0;
@@ -455,20 +461,18 @@ impl SolveDetailsWindow {
             for step in &self.summary {
                 // Lay out name and algorithm column
                 let step_name = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Normal.into(), step.name.clone());
+                    .fonts(|f| f.layout_no_wrap(step.name.clone(), font_id_normal.clone(), Color32::PLACEHOLDER));
                 let step_alg = if let Some(alg) = &step.algorithm {
                     Some(
-                        ui.fonts()
-                            .layout_single_line(FontSize::Normal.into(), format!("  {}", alg)),
+                        ui.fonts(|f| f.layout_no_wrap(format!("  {}", alg), font_id_normal.clone(), Color32::PLACEHOLDER)),
                     )
                 } else {
                     None
                 };
                 step_name_width = step_name_width.max(
-                    step_name.size.x
+                    step_name.size().x
                         + if let Some(alg) = &step_alg {
-                            alg.size.x
+                            alg.size().x
                         } else {
                             0.0
                         },
@@ -477,30 +481,31 @@ impl SolveDetailsWindow {
                 step_algs.push(step_alg);
 
                 // Lay out recognition time column
-                let recognition = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
+                let recognition = ui.fonts(|f| f.layout_no_wrap(
                     if step.recognition_time == 0 {
                         "".into()
                     } else {
                         solve_time_string(step.recognition_time)
                     },
-                );
-                recognition_width = recognition_width.max(recognition.size.x);
+                    font_id_normal.clone(),
+                    Color32::PLACEHOLDER,
+                ));
+                recognition_width = recognition_width.max(recognition.size().x);
                 recognitions.push(recognition);
 
                 // Lay out execution time column
-                let execution = ui.fonts().layout_single_line(
-                    FontSize::Normal.into(),
+                let execution = ui.fonts(|f| f.layout_no_wrap(
                     solve_time_string(step.execution_time),
-                );
-                execution_width = execution_width.max(execution.size.x);
+                    font_id_normal.clone(),
+                    Color32::PLACEHOLDER,
+                ));
+                execution_width = execution_width.max(execution.size().x);
                 executions.push(execution);
 
                 // Lay out move count column
                 let move_count = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Normal.into(), format!("{}", step.move_count));
-                move_count_width = move_count_width.max(move_count.size.x);
+                    .fonts(|f| f.layout_no_wrap(format!("{}", step.move_count), font_id_normal.clone(), Color32::PLACEHOLDER));
+                move_count_width = move_count_width.max(move_count.size().x);
                 move_counts.push(move_count);
 
                 max_step_time = max_step_time.max(step.recognition_time + step.execution_time);
@@ -511,20 +516,21 @@ impl SolveDetailsWindow {
             }
 
             // Lay out total times and move counts
-            let total_recognition_time = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
+            let total_recognition_time = ui.fonts(|f| f.layout_no_wrap(
                 solve_time_string(total_recognition_time),
-            );
-            let total_execution_time = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
+                font_id_normal.clone(),
+                Color32::PLACEHOLDER,
+            ));
+            let total_execution_time = ui.fonts(|f| f.layout_no_wrap(
                 solve_time_string(total_execution_time),
-            );
+                font_id_normal.clone(),
+                Color32::PLACEHOLDER,
+            ));
             let total_move_count = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), format!("{}", total_move_count));
-            recognition_width = recognition_width.max(total_recognition_time.size.x);
-            execution_width = execution_width.max(total_execution_time.size.x);
-            move_count_width = move_count_width.max(total_move_count.size.x);
+                .fonts(|f| f.layout_no_wrap(format!("{}", total_move_count), font_id_normal.clone(), Color32::PLACEHOLDER));
+            recognition_width = recognition_width.max(total_recognition_time.size().x);
+            execution_width = execution_width.max(total_execution_time.size().x);
+            move_count_width = move_count_width.max(total_move_count.size().x);
 
             // Add padding to columns and compute size of graph column
             step_name_width += STEP_COLUMN_PADDING;
@@ -545,9 +551,10 @@ impl SolveDetailsWindow {
             let recognition_offset = execution_offset - execution_width;
 
             // Show column headers
+            let small_style: TextStyle = FontSize::Small.into();
             let (_, rect) = ui.allocate_space(Vec2::new(
                 target_width,
-                ui.fonts().row_height(FontSize::Small.into()),
+                ui.text_style_height(&small_style),
             ));
             ui.painter().galley(
                 Pos2::new(rect.left() + step_offset, rect.top()),
@@ -556,7 +563,7 @@ impl SolveDetailsWindow {
             );
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + recognition_offset - recognition_header.size.x,
+                    rect.left() + recognition_offset - recognition_header.size().x,
                     rect.top(),
                 ),
                 recognition_header,
@@ -564,7 +571,7 @@ impl SolveDetailsWindow {
             );
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + execution_offset - execution_header.size.x,
+                    rect.left() + execution_offset - execution_header.size().x,
                     rect.top(),
                 ),
                 execution_header,
@@ -572,7 +579,7 @@ impl SolveDetailsWindow {
             );
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + move_count_offset - move_count_header.size.x,
+                    rect.left() + move_count_offset - move_count_header.size().x,
                     rect.top(),
                 ),
                 move_count_header,
@@ -584,7 +591,7 @@ impl SolveDetailsWindow {
             for (i, step) in self.summary.clone().iter().enumerate() {
                 let (id, rect) = ui.allocate_space(Vec2::new(
                     target_width,
-                    ui.fonts().row_height(FontSize::Small.into()),
+                    ui.text_style_height(&small_style),
                 ));
                 let response = ui.interact(rect, id, Sense::click());
 
@@ -616,7 +623,7 @@ impl SolveDetailsWindow {
                 // Draw step algorithm if there is one
                 if let Some(alg) = &step_algs[i] {
                     ui.painter().galley(
-                        Pos2::new(rect.left() + step_offset + step_names[i].size.x, rect.top()),
+                        Pos2::new(rect.left() + step_offset + step_names[i].size().x, rect.top()),
                         alg.clone(),
                         Theme::Disabled.into(),
                     );
@@ -625,7 +632,7 @@ impl SolveDetailsWindow {
                 // Draw recognition time
                 ui.painter().galley(
                     Pos2::new(
-                        rect.left() + recognition_offset - recognitions[i].size.x,
+                        rect.left() + recognition_offset - recognitions[i].size().x,
                         rect.top(),
                     ),
                     recognitions[i].clone(),
@@ -635,7 +642,7 @@ impl SolveDetailsWindow {
                 // Draw execution time
                 ui.painter().galley(
                     Pos2::new(
-                        rect.left() + execution_offset - executions[i].size.x,
+                        rect.left() + execution_offset - executions[i].size().x,
                         rect.top(),
                     ),
                     executions[i].clone(),
@@ -645,7 +652,7 @@ impl SolveDetailsWindow {
                 // Draw move count
                 ui.painter().galley(
                     Pos2::new(
-                        rect.left() + move_count_offset - move_counts[i].size.x,
+                        rect.left() + move_count_offset - move_counts[i].size().x,
                         rect.top(),
                     ),
                     move_counts[i].clone(),
@@ -693,13 +700,12 @@ impl SolveDetailsWindow {
             // Draw totals
             let (_, rect) = ui.allocate_space(Vec2::new(
                 target_width,
-                ui.fonts().row_height(FontSize::Small.into()),
+                ui.text_style_height(&small_style),
             ));
 
             // Draw total name
             let galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), "Total".into());
+                .fonts(|f| f.layout_no_wrap("Total".into(), font_id_normal.clone(), Color32::PLACEHOLDER));
             ui.painter().galley(
                 Pos2::new(rect.left() + step_offset, rect.top()),
                 galley,
@@ -709,7 +715,7 @@ impl SolveDetailsWindow {
             // Draw total recognition time
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + recognition_offset - total_recognition_time.size.x,
+                    rect.left() + recognition_offset - total_recognition_time.size().x,
                     rect.top(),
                 ),
                 total_recognition_time,
@@ -719,7 +725,7 @@ impl SolveDetailsWindow {
             // Draw total execution time
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + execution_offset - total_execution_time.size.x,
+                    rect.left() + execution_offset - total_execution_time.size().x,
                     rect.top(),
                 ),
                 total_execution_time,
@@ -729,7 +735,7 @@ impl SolveDetailsWindow {
             // Draw total move count
             ui.painter().galley(
                 Pos2::new(
-                    rect.left() + move_count_offset - total_move_count.size.x,
+                    rect.left() + move_count_offset - total_move_count.size().x,
                     rect.top(),
                 ),
                 total_move_count,
@@ -742,12 +748,12 @@ impl SolveDetailsWindow {
 
     pub fn update(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         framerate: &mut Framerate,
         cube_rect: &mut Option<Rect>,
         open: &mut bool,
     ) {
-        let full_rect = ctxt.available_rect();
+        let full_rect = ctx.available_rect();
 
         // Compute layout parameters
         let mut cube_size = (full_rect.height() / 2.0).min((full_rect.width() - 64.0) / 2.0);
@@ -765,7 +771,7 @@ impl SolveDetailsWindow {
             tabbed = true;
         }
 
-        ctxt.set_visuals(dialog_visuals());
+        ctx.set_visuals(dialog_visuals());
         Window::new(format!("Solve - {}", date_string(&self.solve.created)))
             .id(Id::new(format!(
                 "solve_{}_{}",
@@ -775,7 +781,7 @@ impl SolveDetailsWindow {
             .collapsible(false)
             .resizable(false)
             .open(open)
-            .show(ctxt, |ui| {
+            .show(ctx, |ui| {
                 if tabbed && self.analysis.successful() {
                     // Tabbed layout with analysis, display options to choose replay or analysis
                     ui.vertical(|ui| {
@@ -801,9 +807,11 @@ impl SolveDetailsWindow {
                             };
                             if ui
                                 .add(
-                                    Label::new("🎞  Replay")
-                                        .text_style(FontSize::Normal.into())
-                                        .sense(Sense::click()),
+                                    Label::new(
+                                        RichText::new("🎞  Replay")
+                                            .text_style(FontSize::Normal.into()),
+                                    )
+                                    .sense(Sense::click()),
                                 )
                                 .clicked()
                             {
@@ -821,9 +829,11 @@ impl SolveDetailsWindow {
                             };
                             if ui
                                 .add(
-                                    Label::new("🖩  Analysis")
-                                        .text_style(FontSize::Normal.into())
-                                        .sense(Sense::click()),
+                                    Label::new(
+                                        RichText::new("🖩  Analysis")
+                                            .text_style(FontSize::Normal.into()),
+                                    )
+                                    .sense(Sense::click()),
                                 )
                                 .clicked()
                             {
@@ -838,7 +848,7 @@ impl SolveDetailsWindow {
                             SolveDetailsMode::Replay => {
                                 ui.allocate_ui(Vec2::new(target_width, 0.0), |ui| {
                                     self.scramble_and_replay(
-                                        ctxt,
+                                        ctx,
                                         ui,
                                         target_width,
                                         cube_size,
@@ -861,7 +871,7 @@ impl SolveDetailsWindow {
                         |ui| {
                             ui.allocate_ui(Vec2::new(target_width, 0.0), |ui| {
                                 self.scramble_and_replay(
-                                    ctxt,
+                                    ctx,
                                     ui,
                                     target_width,
                                     cube_size,
@@ -896,10 +906,10 @@ impl SolveDetailsWindow {
 
     pub fn paint_cube(
         &mut self,
-        ctxt: &CtxRef,
-        gl: &mut GlContext<'_, '_>,
+        ctx: &egui::Context,
+        gl: &mut GlContext<'_>,
         rect: &Rect,
     ) -> Result<()> {
-        self.renderer.draw(ctxt, gl, rect)
+        self.renderer.draw(ctx, gl, rect)
     }
 }

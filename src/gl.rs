@@ -1,5 +1,5 @@
 use anyhow::Result;
-use egui::{CtxRef, Rect};
+use egui::Rect;
 use gl_matrix::{
     common::{to_radian, Mat3, Mat4, Vec3},
     mat3, mat4,
@@ -14,12 +14,6 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use web_sys::{HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext, WebGlShader};
 
-#[cfg(not(target_arch = "wasm32"))]
-use glium::{
-    implement_vertex, index::PrimitiveType, program, uniform, BackfaceCullingMode, Depth,
-    DepthTest, Display, DrawParameters, Frame, IndexBuffer, Program, Surface, VertexBuffer,
-};
-
 #[cfg(target_arch = "wasm32")]
 pub struct GlContext<'a, 'b> {
     pub canvas: &'a HtmlCanvasElement,
@@ -27,9 +21,53 @@ pub struct GlContext<'a, 'b> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub struct GlContext<'a, 'b> {
-    pub display: &'a Display,
-    pub target: &'b mut Frame,
+pub struct GlContext<'a> {
+    pub draw_commands: &'a mut Vec<CubeDrawCommand>,
+    pub screen_size: [u32; 2],
+    pub pixels_per_point: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct CubeDrawCommand {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u16>,
+    pub uniforms: CubeUniforms,
+    pub viewport: [f32; 4], // x, y, width, height (pixel coords)
+}
+
+// WGSL uniform layout for Uniforms:
+//   mat4x4f  view_proj_matrix  offset 0    (64 bytes)
+//   mat4x4f  model_matrix      offset 64   (64 bytes)
+//   mat3x3f  normal_matrix     offset 128  (48 bytes: 3 columns of vec4f with padding)
+//   vec3f    camera_pos        offset 176  (12 bytes + 4 pad)
+//   vec3f    light_pos         offset 192  (12 bytes + 4 pad)
+//   vec3f    light_color       offset 208  (12 bytes + 4 pad)
+// Total: 224 bytes
+#[cfg(not(target_arch = "wasm32"))]
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CubeUniforms {
+    view_proj_matrix: [[f32; 4]; 4],
+    model_matrix: [[f32; 4]; 4],
+    // mat3x3f in WGSL is stored as 3 columns of vec4f (with padding)
+    normal_matrix_col0: [f32; 4], // col 0 + padding
+    normal_matrix_col1: [f32; 4], // col 1 + padding
+    normal_matrix_col2: [f32; 4], // col 2 + padding
+    camera_pos: [f32; 3],
+    _pad0: f32,
+    light_pos: [f32; 3],
+    _pad1: f32,
+    light_color: [f32; 3],
+    _pad2: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Vertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [f32; 3],
+    pub roughness: f32,
 }
 
 pub struct GlRenderer {
@@ -47,9 +85,7 @@ pub struct GlRenderer {
     roughness_buffer: WebGlBuffer,
 
     #[cfg(not(target_arch = "wasm32"))]
-    program: Program,
-    #[cfg(not(target_arch = "wasm32"))]
-    viewport: glium::Rect,
+    viewport: [f32; 4], // x, y, width, height in pixels
     #[cfg(not(target_arch = "wasm32"))]
     view_proj: Mat4,
 
@@ -59,32 +95,6 @@ pub struct GlRenderer {
 
     view: Mat4,
     model: Mat4,
-}
-
-struct ShaderPrograms {
-    vertex_140: &'static str,
-    vertex_100_es: &'static str,
-    fragment_140: &'static str,
-    fragment_100_es: &'static str,
-}
-
-#[derive(Clone, Copy)]
-pub struct Vertex {
-    pub pos: [f32; 3],
-    pub normal: [f32; 3],
-    pub color: [f32; 3],
-    pub roughness: f32,
-}
-
-impl ShaderPrograms {
-    fn default() -> Self {
-        ShaderPrograms {
-            vertex_100_es: include_str!("shaders/vertex_100es.glsl"),
-            vertex_140: include_str!("shaders/vertex_140.glsl"),
-            fragment_100_es: include_str!("shaders/fragment_100es.glsl"),
-            fragment_140: include_str!("shaders/fragment_140.glsl"),
-        }
-    }
 }
 
 impl GlRenderer {
@@ -149,38 +159,20 @@ impl GlRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(gl: &GlContext<'_, '_>) -> Result<Self> {
-        let shader = ShaderPrograms::default();
-        let program = program!(gl.display,
-            140 => {
-                vertex: shader.vertex_140,
-                fragment: shader.fragment_140
-            }
-            100 es => {
-                vertex: shader.vertex_100_es,
-                fragment: shader.fragment_100_es
-            }
-        )?;
-
+    pub fn new(_gl: &GlContext<'_>) -> Result<Self> {
         let mut view: Mat4 = [0.0; 16];
         let mut model: Mat4 = [0.0; 16];
         mat4::identity(&mut view);
         mat4::identity(&mut model);
 
         Ok(Self {
-            program,
             view,
             model,
             camera_pos: [0.0, 0.0, 0.0],
             light_pos: [0.0, 0.0, 0.0],
             light_color: [0.0, 0.0, 0.0],
             view_proj: [0.0; 16],
-            viewport: glium::Rect {
-                left: 0,
-                bottom: 0,
-                width: 0,
-                height: 0,
-            },
+            viewport: [0.0; 4],
         })
     }
 
@@ -223,7 +215,7 @@ impl GlRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn begin(&mut self, ctxt: &CtxRef, gl: &mut GlContext<'_, '_>, rect: &Rect) {
+    pub fn begin(&mut self, ctxt: &egui::Context, gl: &mut GlContext<'_, '_>, rect: &Rect) {
         gl.ctxt.disable(WebGlRenderingContext::SCISSOR_TEST);
         gl.ctxt.enable(WebGlRenderingContext::CULL_FACE);
         gl.ctxt.enable(WebGlRenderingContext::DEPTH_TEST);
@@ -272,19 +264,18 @@ impl GlRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn begin(&mut self, ctxt: &CtxRef, gl: &mut GlContext<'_, '_>, rect: &Rect) {
-        let (_, screen_height) = gl.display.get_framebuffer_dimensions();
-        self.viewport = glium::Rect {
-            left: (rect.left() * ctxt.pixels_per_point()) as u32,
-            bottom: screen_height.saturating_sub((rect.bottom() * ctxt.pixels_per_point()) as u32),
-            width: (rect.width() * ctxt.pixels_per_point()) as u32,
-            height: (rect.height() * ctxt.pixels_per_point()) as u32,
-        };
+    pub fn begin(&mut self, _ctxt: &egui::Context, gl: &mut GlContext<'_>, rect: &Rect) {
+        let ppp = gl.pixels_per_point;
+        let _ = gl.screen_size; // not needed in wgpu (top-left origin)
+
+        let x = rect.left() * ppp;
+        let y = rect.top() * ppp;
+        let w = rect.width() * ppp;
+        let h = rect.height() * ppp;
+        self.viewport = [x, y, w, h];
 
         let proj = Self::projection_matrix(rect);
         mat4::multiply(&mut self.view_proj, &proj, &self.view);
-
-        gl.target.clear(None, None, true, Some(1.0), Some(0));
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -466,86 +457,46 @@ impl GlRenderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn draw(
         &mut self,
-        gl: &mut GlContext<'_, '_>,
+        gl: &mut GlContext<'_>,
         verts: &[Vertex],
         idx: &[u16],
     ) -> Result<()> {
-        implement_vertex!(Vertex, pos, normal, color, roughness);
-
-        let vertex_buffer = VertexBuffer::new(gl.display, verts)?;
-        let index_buffer = IndexBuffer::new(gl.display, PrimitiveType::TrianglesList, idx)?;
-
         let normal_mat = self.normal_matrix();
 
         let view_proj = [
-            [
-                self.view_proj[0],
-                self.view_proj[1],
-                self.view_proj[2],
-                self.view_proj[3],
-            ],
-            [
-                self.view_proj[4],
-                self.view_proj[5],
-                self.view_proj[6],
-                self.view_proj[7],
-            ],
-            [
-                self.view_proj[8],
-                self.view_proj[9],
-                self.view_proj[10],
-                self.view_proj[11],
-            ],
-            [
-                self.view_proj[12],
-                self.view_proj[13],
-                self.view_proj[14],
-                self.view_proj[15],
-            ],
+            [self.view_proj[0], self.view_proj[1], self.view_proj[2], self.view_proj[3]],
+            [self.view_proj[4], self.view_proj[5], self.view_proj[6], self.view_proj[7]],
+            [self.view_proj[8], self.view_proj[9], self.view_proj[10], self.view_proj[11]],
+            [self.view_proj[12], self.view_proj[13], self.view_proj[14], self.view_proj[15]],
         ];
         let model = [
             [self.model[0], self.model[1], self.model[2], self.model[3]],
             [self.model[4], self.model[5], self.model[6], self.model[7]],
             [self.model[8], self.model[9], self.model[10], self.model[11]],
-            [
-                self.model[12],
-                self.model[13],
-                self.model[14],
-                self.model[15],
-            ],
+            [self.model[12], self.model[13], self.model[14], self.model[15]],
         ];
-        let normal_mat = [
-            [normal_mat[0], normal_mat[1], normal_mat[2]],
-            [normal_mat[3], normal_mat[4], normal_mat[5]],
-            [normal_mat[6], normal_mat[7], normal_mat[8]],
-        ];
-        let uniforms = uniform! {
+
+        let uniforms = CubeUniforms {
             view_proj_matrix: view_proj,
             model_matrix: model,
-            normal_matrix: normal_mat,
+            // mat3x3f columns with vec4f padding
+            normal_matrix_col0: [normal_mat[0], normal_mat[1], normal_mat[2], 0.0],
+            normal_matrix_col1: [normal_mat[3], normal_mat[4], normal_mat[5], 0.0],
+            normal_matrix_col2: [normal_mat[6], normal_mat[7], normal_mat[8], 0.0],
             camera_pos: self.camera_pos,
+            _pad0: 0.0,
             light_pos: self.light_pos,
+            _pad1: 0.0,
             light_color: self.light_color,
+            _pad2: 0.0,
         };
 
-        let params = DrawParameters {
-            backface_culling: BackfaceCullingMode::CullClockwise,
-            depth: Depth {
-                test: DepthTest::IfLess,
-                write: true,
-                ..Default::default()
-            },
-            viewport: Some(self.viewport),
-            ..Default::default()
-        };
-
-        gl.target.draw(
-            &vertex_buffer,
-            &index_buffer,
-            &self.program,
-            &uniforms,
-            &params,
-        )?;
+        gl.draw_commands.push(CubeDrawCommand {
+            vertices: verts.to_vec(),
+            indices: idx.to_vec(),
+            uniforms,
+            viewport: self.viewport,
+        });
 
         Ok(())
     }
@@ -558,7 +509,23 @@ impl GlRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn end(&mut self, _gl: &mut GlContext<'_, '_>) {}
+    pub fn end(&mut self, _gl: &mut GlContext<'_>) {}
+}
+
+#[cfg(target_arch = "wasm32")]
+struct ShaderPrograms {
+    vertex_100_es: &'static str,
+    fragment_100_es: &'static str,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ShaderPrograms {
+    fn default() -> Self {
+        ShaderPrograms {
+            vertex_100_es: include_str!("shaders/vertex_100es.glsl"),
+            fragment_100_es: include_str!("shaders/fragment_100es.glsl"),
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

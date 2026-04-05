@@ -1,7 +1,7 @@
 use crate::font::FontSize;
 use crate::theme::Theme;
 use crate::widgets::{color_for_recognition_step_index, color_for_step_index, solve_time_string};
-use egui::{Pos2, Rect, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, TextStyle, Ui, Vec2};
 use tpscube_core::{AnalysisStepSummary, AnalysisSubstepTime};
 
 const MIN_GRAPH_WIDTH: f32 = 200.0;
@@ -46,7 +46,7 @@ impl TimerPostAnalysis {
     }
 
     pub fn height(&self, ui: &Ui) -> f32 {
-        ui.fonts().row_height(FontSize::Normal.into()) * self.steps.len() as f32
+        ui.text_style_height(&FontSize::Normal.into()) * self.steps.len() as f32
     }
 
     pub fn move_count(&self) -> usize {
@@ -58,6 +58,13 @@ impl TimerPostAnalysis {
     pub fn render(&self, ui: &mut Ui, rect: Rect) {
         let mut x = rect.left();
 
+        let normal_font_id =
+            TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Normal))
+                .resolve(ui.style());
+        let small_font_id =
+            TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Small))
+                .resolve(ui.style());
+
         // Measure name column
         let mut name_galleys = Vec::new();
         let mut short_name_galleys = Vec::new();
@@ -65,22 +72,30 @@ impl TimerPostAnalysis {
         let mut name_col_width: f32 = 0.0;
         let mut short_name_col_width: f32 = 0.0;
         for step in &self.steps {
-            let name_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), step.name.clone());
-            let short_name_galley = ui
-                .fonts()
-                .layout_single_line(FontSize::Normal.into(), step.short_name.clone());
-            let algorithm_galley = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
-                if let Some(algorithm) = &step.algorithm {
-                    format!(" {}", algorithm)
-                } else {
-                    "".into()
-                },
-            );
-            name_col_width = name_col_width.max(name_galley.size.x + algorithm_galley.size.x);
-            short_name_col_width = short_name_col_width.max(short_name_galley.size.x);
+            let name_galley = ui.fonts(|f| {
+                f.layout_no_wrap(step.name.clone(), normal_font_id.clone(), Color32::PLACEHOLDER)
+            });
+            let short_name_galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    step.short_name.clone(),
+                    normal_font_id.clone(),
+                    Color32::PLACEHOLDER,
+                )
+            });
+            let algorithm_galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    if let Some(algorithm) = &step.algorithm {
+                        format!(" {}", algorithm)
+                    } else {
+                        "".into()
+                    },
+                    normal_font_id.clone(),
+                    Color32::PLACEHOLDER,
+                )
+            });
+            name_col_width =
+                name_col_width.max(name_galley.size().x + algorithm_galley.size().x);
+            short_name_col_width = short_name_col_width.max(short_name_galley.size().x);
 
             name_galleys.push(name_galley);
             short_name_galleys.push(short_name_galley);
@@ -101,11 +116,12 @@ impl TimerPostAnalysis {
         }
 
         // Render step names
+        let row_height = ui.text_style_height(&FontSize::Normal.into());
         let mut y = rect.top();
         for _ in &self.steps {
             if style == TimerPostAnalysisStyle::Full {
                 let name_galley = name_galleys.remove(0);
-                let name_width = name_galley.size.x;
+                let name_width = name_galley.size().x;
                 ui.painter()
                     .galley(Pos2::new(x, y), name_galley, Theme::Content.into());
                 ui.painter().galley(
@@ -120,7 +136,7 @@ impl TimerPostAnalysis {
                     Theme::Content.into(),
                 );
             }
-            y += ui.fonts().row_height(FontSize::Normal.into());
+            y += row_height;
         }
 
         // Layout time and move strings for each step and determine size
@@ -134,22 +150,28 @@ impl TimerPostAnalysis {
         for step in &self.steps {
             let time = step.recognition_time + step.execution_time;
             max_time = max_time.max(time);
-            let galley = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
-                if style.has_bars() {
-                    format!("  {}", solve_time_string(time))
-                } else {
-                    format!("{}", solve_time_string(time))
-                },
-            );
-            time_width = time_width.max(galley.size.x);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    if style.has_bars() {
+                        format!("  {}", solve_time_string(time))
+                    } else {
+                        format!("{}", solve_time_string(time))
+                    },
+                    normal_font_id.clone(),
+                    Color32::PLACEHOLDER,
+                )
+            });
+            time_width = time_width.max(galley.size().x);
             time_galleys.push(galley);
 
-            let galley = ui.fonts().layout_single_line(
-                FontSize::Small.into(),
-                format!("  ({} moves)", step.move_count),
-            );
-            move_width = move_width.max(galley.size.x);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    format!("  ({} moves)", step.move_count),
+                    small_font_id.clone(),
+                    Color32::PLACEHOLDER,
+                )
+            });
+            move_width = move_width.max(galley.size().x);
             move_galleys.push(galley);
         }
 
@@ -162,6 +184,7 @@ impl TimerPostAnalysis {
 
         // Render step time graph
         let bar_width = total_graph_width - (time_width + move_width);
+        let small_row_height = ui.text_style_height(&FontSize::Small.into());
         let mut y = rect.top();
         for step in &self.steps {
             let mut offset = 0.0;
@@ -182,10 +205,7 @@ impl TimerPostAnalysis {
                     ui.painter().rect_filled(
                         Rect::from_min_size(
                             Pos2::new(x + offset, y + 3.0),
-                            Vec2::new(
-                                time_bar_frac * bar_width,
-                                ui.fonts().row_height(FontSize::Normal.into()) - 4.0,
-                            ),
+                            Vec2::new(time_bar_frac * bar_width, row_height - 4.0),
                         ),
                         0.0,
                         color,
@@ -196,7 +216,7 @@ impl TimerPostAnalysis {
 
             // Draw time to the right of bar
             let galley = time_galleys.remove(0);
-            let width = galley.size.x;
+            let width = galley.size().x;
             ui.painter().galley(
                 Pos2::new(x + offset, y),
                 galley,
@@ -209,15 +229,14 @@ impl TimerPostAnalysis {
                 ui.painter().galley(
                     Pos2::new(
                         x + offset,
-                        y + (ui.fonts().row_height(FontSize::Normal.into())
-                            - ui.fonts().row_height(FontSize::Small.into())),
+                        y + (row_height - small_row_height),
                     ),
                     move_galleys.remove(0),
                     color_for_step_index(step.major_step_index),
                 );
             }
 
-            y += ui.fonts().row_height(FontSize::Normal.into());
+            y += row_height;
         }
     }
 }

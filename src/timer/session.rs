@@ -1,11 +1,11 @@
 use crate::app::SolveDetails;
-use crate::font::{FontSize, LabelFontSize};
+use crate::font::FontSize;
 use crate::theme::Theme;
 use crate::widgets::{solve_time_string, CustomWidgets};
 use chrono::{DateTime, Local};
 use egui::{
-    popup_below_widget, Align2, CtxRef, CursorIcon, Label, Layout, ScrollArea, SelectableLabel,
-    Sense, SidePanel, Stroke, TopBottomPanel, Ui, Vec2,
+    popup_below_widget, Align2, Color32, CursorIcon, Label, Layout, PopupCloseBehavior, RichText,
+    ScrollArea, SelectableLabel, Sense, SidePanel, Stroke, TextStyle, TopBottomPanel, Ui, Vec2,
 };
 use tpscube_core::{
     Average, BestSolve, History, ListAverage, Penalty, Solve, SolveList, SolveType,
@@ -99,11 +99,11 @@ impl TimerSession {
     ) {
         ui.horizontal(|ui| {
             if small {
-                ui.add(Label::new(format!("{}:", name)).small());
+                ui.add(Label::new(RichText::new(format!("{}:", name)).small()));
             } else {
                 ui.label(format!("{}:", name));
             }
-            ui.with_layout(Layout::right_to_left(), |ui| {
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.visuals_mut().widgets.noninteractive.fg_stroke = Stroke {
                     width: 1.0,
                     color: Theme::Content.into(),
@@ -170,91 +170,99 @@ impl TimerSession {
 
         ui.style_mut().spacing.item_spacing.x = 0.0;
         ui.horizontal(|ui| {
-            ui.add(Label::new(format!("{}.", idx + 1)).text_color(Theme::Disabled));
-            ui.with_layout(Layout::right_to_left(), |ui| {
+            ui.add(Label::new(
+                RichText::new(format!("{}.", idx + 1)).color(Theme::Disabled),
+            ));
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                 let popup_id = ui.make_persistent_id(format!("timer-{}", solve.id));
-                let response = ui.add(Label::new("  ☰").small().sense(Sense::click()));
+                let response = ui.add(
+                    Label::new(RichText::new("  ☰").small()).sense(Sense::click()),
+                );
                 if response.clicked() {
-                    ui.memory().toggle_popup(popup_id);
+                    ui.memory_mut(|m| m.toggle_popup(popup_id));
                 }
-                popup_below_widget(ui, popup_id, &response, |ui| {
-                    ui.set_min_width(180.0);
-                    if ui
-                        .add(
-                            SelectableLabel::new(
+                popup_below_widget(
+                    ui,
+                    popup_id,
+                    &response,
+                    PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(180.0);
+                        if ui
+                            .add(SelectableLabel::new(
                                 match solve.penalty {
                                     Penalty::None => true,
                                     _ => false,
                                 },
-                                "No penalty",
-                            )
-                            .text_style(FontSize::Normal.into()),
-                        )
-                        .clicked()
-                    {
-                        history.penalty(solve.id.clone(), Penalty::None);
-                        let _ = history.local_commit();
-                    }
+                                RichText::new("No penalty")
+                                    .text_style(FontSize::Normal.into()),
+                            ))
+                            .clicked()
+                        {
+                            history.penalty(solve.id.clone(), Penalty::None);
+                            let _ = history.local_commit();
+                        }
 
-                    if ui
-                        .add(
-                            SelectableLabel::new(
+                        if ui
+                            .add(SelectableLabel::new(
                                 match solve.penalty {
                                     Penalty::Time(2000) => true,
                                     _ => false,
                                 },
-                                "2 second penalty",
-                            )
-                            .text_style(FontSize::Normal.into()),
-                        )
-                        .clicked()
-                    {
-                        history.penalty(solve.id.clone(), Penalty::Time(2000));
-                        let _ = history.local_commit();
-                    }
+                                RichText::new("2 second penalty")
+                                    .text_style(FontSize::Normal.into()),
+                            ))
+                            .clicked()
+                        {
+                            history.penalty(solve.id.clone(), Penalty::Time(2000));
+                            let _ = history.local_commit();
+                        }
 
-                    if ui
-                        .add(
-                            SelectableLabel::new(
+                        if ui
+                            .add(SelectableLabel::new(
                                 match solve.penalty {
                                     Penalty::DNF => true,
                                     _ => false,
                                 },
-                                "DNF",
-                            )
-                            .text_style(FontSize::Normal.into()),
-                        )
-                        .clicked()
-                    {
-                        history.penalty(solve.id.clone(), Penalty::DNF);
-                        let _ = history.local_commit();
-                    }
+                                RichText::new("DNF").text_style(FontSize::Normal.into()),
+                            ))
+                            .clicked()
+                        {
+                            history.penalty(solve.id.clone(), Penalty::DNF);
+                            let _ = history.local_commit();
+                        }
 
-                    ui.separator();
+                        ui.separator();
 
-                    if ui
-                        .add(
-                            SelectableLabel::new(false, "Delete solve")
-                                .text_style(FontSize::Normal.into()),
-                        )
-                        .clicked()
-                    {
-                        history.delete_solve(solve.id.clone());
-                        let _ = history.local_commit();
-                    }
-                });
+                        if ui
+                            .add(SelectableLabel::new(
+                                false,
+                                RichText::new("Delete solve")
+                                    .text_style(FontSize::Normal.into()),
+                            ))
+                            .clicked()
+                        {
+                            history.delete_solve(solve.id.clone());
+                            let _ = history.local_commit();
+                        }
+                    },
+                );
 
                 // Draw penalty if there is one, but always reserve space for it
-                let penalty_galley = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Small.into(), " (+2) ".into());
-                let (response, painter) = ui.allocate_painter(penalty_galley.size, Sense::hover());
+                let small_font_id =
+                    TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Small))
+                        .resolve(ui.style());
+                let penalty_galley = ui.fonts(|f| {
+                    f.layout_no_wrap(" (+2) ".into(), small_font_id.clone(), Color32::PLACEHOLDER)
+                });
+                let (response, painter) =
+                    ui.allocate_painter(penalty_galley.size(), Sense::hover());
                 if let Penalty::Time(penalty) = solve.penalty {
                     painter.text(
                         response.rect.left_bottom(),
                         Align2::LEFT_BOTTOM,
                         format!(" (+{})", penalty / 1000),
-                        FontSize::Small.into(),
+                        small_font_id,
                         Theme::Red.into(),
                     );
                 }
@@ -275,8 +283,7 @@ impl TimerSession {
                     ui.add(Label::new(solve_time_string(time)).sense(Sense::click()))
                 } else {
                     ui.add(
-                        Label::new("DNF")
-                            .text_color(Theme::Red)
+                        Label::new(RichText::new("DNF").color(Theme::Red))
                             .sense(Sense::click()),
                     )
                 };
@@ -294,14 +301,14 @@ impl TimerSession {
 
     pub fn landscape_sidebar(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         history: &mut History,
         details: &mut Option<SolveDetails>,
     ) {
         SidePanel::left("left_timer")
             .default_width(175.0)
             .resizable(false)
-            .show(ctxt, |ui| {
+            .show(ctx, |ui| {
                 ui.section("Session");
 
                 self.update(history);
@@ -370,14 +377,19 @@ impl TimerSession {
                             width: 1.0,
                             color: Theme::Red.into(),
                         };
-                        ui.with_layout(Layout::right_to_left(), |ui| {
-                            if ui
-                                .add(Label::new("↺  New session").sense(Sense::click()))
-                                .clicked()
-                            {
-                                let _ = history.new_session();
-                            }
-                        })
+                        ui.with_layout(
+                            Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .add(
+                                        Label::new("↺  New session").sense(Sense::click()),
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = history.new_session();
+                                }
+                            },
+                        )
                     });
                 });
                 ui.add_space(8.0);
@@ -386,7 +398,7 @@ impl TimerSession {
                 ui.visuals_mut().widgets.inactive.bg_fill = Theme::BackgroundHighlight.into();
                 ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
                 ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
-                ScrollArea::auto_sized()
+                ScrollArea::vertical()
                     .id_source("timer_solve_list")
                     .show(ui, |ui| {
                         let mut has_solves = false;
@@ -395,9 +407,10 @@ impl TimerSession {
                             has_solves = true;
                         }
                         if !has_solves {
-                            ui.add(
-                                Label::new("No solves in this session").text_color(Theme::Disabled),
-                            );
+                            ui.add(Label::new(
+                                RichText::new("No solves in this session")
+                                    .color(Theme::Disabled),
+                            ));
                         }
                     });
             });
@@ -405,19 +418,18 @@ impl TimerSession {
 
     pub fn portrait_top_bar(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         history: &mut History,
         details: &mut Option<SolveDetails>,
     ) {
-        TopBottomPanel::top("top_timer").show(ctxt, |ui| {
+        TopBottomPanel::top("top_timer").show(ctx, |ui| {
             // Session header with embedded new session button.
             ui.horizontal(|ui| {
-                ui.add(
-                    Label::new("Session")
-                        .font_size(FontSize::Section)
-                        .text_color(Theme::Blue),
-                );
-                ui.with_layout(Layout::right_to_left(), |ui| {
+                ui.add(Label::new(
+                    crate::font::sized_text("Session", FontSize::Section)
+                        .color(Theme::Blue),
+                ));
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(Label::new("↺  New session").sense(Sense::click()))
                         .clicked()

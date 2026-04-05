@@ -11,7 +11,7 @@ use crate::settings::Settings;
 use crate::style::{content_visuals, side_visuals};
 use anyhow::Result;
 use chrono::Local;
-use egui::{Align, CentralPanel, CtxRef, Event, Key, Layout, Rect, Response, Sense, Ui, Vec2};
+use egui::{Align, CentralPanel, Event, Key, Layout, Rect, Response, Sense, Ui, Vec2};
 use instant::Instant;
 use scramble::TimerCube;
 use session::TimerSession;
@@ -135,7 +135,7 @@ impl TimerWidget {
 
     fn check_for_interaction_and_state_transition(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &mut Ui,
         rect: &Rect,
         history: &mut History,
@@ -154,7 +154,7 @@ impl TimerWidget {
         );
 
         let interact = ui.interact(interact_rect, id, Sense::click_and_drag());
-        ui.memory().request_focus(id);
+        ui.memory_mut(|m| m.request_focus(id));
 
         // Check for Bluetooth timer events
         for event in &bluetooth_events {
@@ -166,7 +166,7 @@ impl TimerWidget {
                         }
                         _ => self.state = TimerState::ExternalTimerPreparing(0, None),
                     }
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
                 BluetoothEvent::TimerStartCancel => {
                     match self.state.clone() {
@@ -177,20 +177,20 @@ impl TimerWidget {
                             self.state = TimerState::Inactive(0, None);
                         }
                     }
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
                 BluetoothEvent::TimerReady => {
                     self.state = TimerState::ExternalTimerReady;
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
                 BluetoothEvent::TimerStarted => {
                     self.state = TimerState::ExternalTimerSolving(Instant::now());
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
                 BluetoothEvent::TimerFinished(time) => {
                     self.finish_solve(*time, history, solve_type);
                     self.state = TimerState::SolveComplete(*time, None);
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
                 _ => (),
             }
@@ -201,7 +201,9 @@ impl TimerWidget {
             && (interact.is_pointer_button_down_on() || interact.dragged());
         match self.state.clone() {
             TimerState::Inactive(time, analysis) => {
-                if accept_keyboard && (ctxt.input().keys_down.contains(&Key::Space) || touching) {
+                if accept_keyboard
+                    && (ctx.input(|i| i.keys_down.contains(&Key::Space)) || touching)
+                {
                     self.state = TimerState::Preparing(Instant::now(), time, analysis);
                 } else if self.cube.is_bluetooth_active() {
                     if self
@@ -222,7 +224,8 @@ impl TimerWidget {
                         }
                     }
                 } else if accept_keyboard {
-                    for event in &ctxt.input().events {
+                    let events = ctx.input(|i| i.events.clone());
+                    for event in &events {
                         if let Event::Text(text) = event {
                             if text.len() == 1 {
                                 let ch = text.chars().next().unwrap();
@@ -235,7 +238,7 @@ impl TimerWidget {
                 }
             }
             TimerState::Preparing(start, time, analysis) => {
-                if ctxt.input().keys_down.len() == 0 && !touching {
+                if ctx.input(|i| i.keys_down.len()) == 0 && !touching {
                     self.state = TimerState::Inactive(time, analysis);
                 } else if (Instant::now() - start).as_millis() > 300 {
                     self.state = TimerState::Ready;
@@ -268,7 +271,7 @@ impl TimerWidget {
                 }
             }
             TimerState::Ready => {
-                if ctxt.input().keys_down.len() == 0 && !touching {
+                if ctx.input(|i| i.keys_down.len()) == 0 && !touching {
                     self.state = TimerState::Solving(Instant::now());
                 }
             }
@@ -299,20 +302,20 @@ impl TimerWidget {
                 }
             }
             TimerState::Solving(start) => {
-                if ctxt.input().keys_down.contains(&Key::Escape) {
+                if ctx.input(|i| i.keys_down.contains(&Key::Escape)) {
                     self.abort_solve(
                         (Instant::now() - start).as_millis() as u32,
                         history,
                         solve_type,
                     );
-                    ctxt.request_repaint();
-                } else if ctxt.input().keys_down.len() != 0 || touching {
+                    ctx.request_repaint();
+                } else if ctx.input(|i| i.keys_down.len()) != 0 || touching {
                     self.finish_solve(
                         (Instant::now() - start).as_millis() as u32,
                         history,
                         solve_type,
                     );
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
             }
             TimerState::BluetoothSolving(start, moves, _) => {
@@ -323,26 +326,26 @@ impl TimerWidget {
                     }
                 }
 
-                if ctxt.input().keys_down.contains(&Key::Escape) {
+                if ctx.input(|i| i.keys_down.contains(&Key::Escape)) {
                     self.abort_solve(
                         (Instant::now() - start).as_millis() as u32,
                         history,
                         solve_type,
                     );
-                    ctxt.request_repaint();
-                } else if ctxt.input().keys_down.len() != 0 || touching {
+                    ctx.request_repaint();
+                } else if ctx.input(|i| i.keys_down.len()) != 0 || touching {
                     self.finish_solve(
                         (Instant::now() - start).as_millis() as u32,
                         history,
                         solve_type,
                     );
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 } else if bluetooth_moves.len() != 0 {
                     let mut moves = moves.clone();
                     moves.extend(bluetooth_moves);
                     if self.cube.is_solved() {
                         self.finish_bluetooth_solve(history, moves, bluetooth_name, solve_type);
-                        ctxt.request_repaint();
+                        ctx.request_repaint();
                     } else {
                         let mut cube = Cube3x3x3::new();
                         cube.do_moves(self.cube.scramble());
@@ -366,20 +369,21 @@ impl TimerWidget {
                 if bluetooth_name.is_none() {
                     self.state = TimerState::Inactive(0, None);
                 }
-                ctxt.request_repaint();
+                ctx.request_repaint();
             }
             TimerState::ManualTimeEntry(digits) => {
-                if ctxt.input().key_down(Key::Escape) {
+                if ctx.input(|i| i.key_down(Key::Escape)) {
                     self.state = TimerState::Inactive(0, None);
-                } else if ctxt.input().key_down(Key::Backspace) {
+                } else if ctx.input(|i| i.key_down(Key::Backspace)) {
                     self.state =
                         TimerState::ManualTimeEntryDelay(digits / 10, Some(Key::Backspace));
-                } else if ctxt.input().key_down(Key::Enter) {
+                } else if ctx.input(|i| i.key_down(Key::Enter)) {
                     let time = TimerState::digits_to_time(digits);
                     self.finish_solve(time, history, solve_type);
                     self.state = TimerState::SolveComplete(time, None);
                 } else {
-                    for event in &ctxt.input().events {
+                    let events = ctx.input(|i| i.events.clone());
+                    for event in &events {
                         if let Event::Text(text) = event {
                             if text.len() == 1 {
                                 let ch = text.chars().next().unwrap();
@@ -396,7 +400,7 @@ impl TimerWidget {
                 // for every key. WTF. This has the side effect of possible eaten inputs
                 // but its better than guaranteed repeated inputs.
                 if let Some(key) = wait_for {
-                    if !ctxt.input().key_down(key) {
+                    if !ctx.input(|i| i.key_down(key)) {
                         self.state = TimerState::ManualTimeEntry(digits);
                     }
                 } else {
@@ -404,9 +408,9 @@ impl TimerWidget {
                 }
             }
             TimerState::SolveComplete(time, analysis) => {
-                if ctxt.input().keys_down.len() == 0 && !touching {
+                if ctx.input(|i| i.keys_down.len()) == 0 && !touching {
                     self.state = TimerState::Inactive(time, analysis);
-                    ctxt.request_repaint();
+                    ctx.request_repaint();
                 }
             }
         }
@@ -429,8 +433,7 @@ impl TimerWidget {
 
     pub fn update(
         &mut self,
-        ctxt: &CtxRef,
-        _frame: &mut epi::Frame<'_>,
+        ctx: &egui::Context,
         history: &mut History,
         bluetooth_state: Option<Cube3x3x3>,
         bluetooth_events: Vec<BluetoothEvent>,
@@ -455,18 +458,18 @@ impl TimerWidget {
         self.cube.check_solve_type(*solve_type);
         self.check_for_expired_session(history, *solve_type);
 
-        ctxt.set_visuals(side_visuals());
-        let aspect = ctxt.available_rect().width() / ctxt.available_rect().height();
+        ctx.set_visuals(side_visuals());
+        let aspect = ctx.available_rect().width() / ctx.available_rect().height();
         if aspect >= 1.0 {
             // Landscape mode. Session details to the left.
-            self.session.landscape_sidebar(ctxt, history, details);
+            self.session.landscape_sidebar(ctx, history, details);
         } else {
             // Portrait mode. Session details at the top.
-            self.session.portrait_top_bar(ctxt, history, details);
+            self.session.portrait_top_bar(ctx, history, details);
         }
 
-        ctxt.set_visuals(content_visuals());
-        CentralPanel::default().show(ctxt, |ui| {
+        ctx.set_visuals(content_visuals());
+        CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
                 // The rest of the central area is the timer
                 ui.with_layout(Layout::top_down(Align::Center), |ui| {
@@ -491,7 +494,7 @@ impl TimerWidget {
                     // The entire timer area is interactable, touch events should start/stop the
                     // timer anywhere in the timer area.
                     let interact = self.check_for_interaction_and_state_transition(
-                        ctxt,
+                        ctx,
                         ui,
                         &rect,
                         history,
@@ -528,7 +531,7 @@ impl TimerWidget {
                     }
 
                     self.cube
-                        .rotate_cube_with_input(ctxt, ui, cube_rect, interact);
+                        .rotate_cube_with_input(ctx, ui, cube_rect, interact);
                 });
             });
         });
@@ -546,10 +549,10 @@ impl TimerWidget {
 
     pub fn paint_cube(
         &mut self,
-        ctxt: &CtxRef,
-        gl: &mut GlContext<'_, '_>,
+        ctx: &egui::Context,
+        gl: &mut GlContext<'_>,
         rect: &Rect,
     ) -> Result<()> {
-        self.cube.paint_cube(ctxt, gl, rect)
+        self.cube.paint_cube(ctx, gl, rect)
     }
 }

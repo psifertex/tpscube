@@ -3,8 +3,8 @@ use crate::theme::Theme;
 use crate::widgets::short_day_string;
 use chrono::{DateTime, Local};
 use egui::{
-    epaint::{Mesh, TextureId, Vertex, WHITE_UV},
-    Color32, CtxRef, Pos2, Rect, Response, Shape, Stroke, Ui, Vec2,
+    epaint::{Mesh, Vertex, WHITE_UV},
+    Color32, Pos2, Rect, Response, Shape, Stroke, TextStyle, TextureId, Ui, Vec2,
 };
 
 const AXIS_PADDING: f32 = 16.0;
@@ -64,9 +64,9 @@ impl Plot {
         }
     }
 
-    pub fn update(&mut self, ctxt: &CtxRef, ui: &mut Ui, rect: Rect, interact: Response) {
+    pub fn update(&mut self, ctx: &egui::Context, ui: &mut Ui, rect: Rect, interact: Response) {
         match self {
-            Plot::Single(plot) => plot.update(ctxt, ui, rect, interact),
+            Plot::Single(plot) => plot.update(ctx, ui, rect, interact),
         }
     }
 }
@@ -98,7 +98,7 @@ impl SinglePlot {
         self.points.len() >= 2
     }
 
-    fn update_zoom(&mut self, ctxt: &CtxRef, ui: &Ui, x_delta: f32, y_delta: f32, rect: &Rect) {
+    fn update_zoom(&mut self, ctx: &egui::Context, ui: &Ui, x_delta: f32, y_delta: f32, rect: &Rect) {
         if x_delta.abs() < EPSILON && y_delta.abs() < EPSILON {
             // Don't do anything if no scrolling
             return;
@@ -106,7 +106,7 @@ impl SinglePlot {
 
         // Compute where on a x axis the pointer is. This will be used to try and keep whatever
         // is under the cursor at the same position when zooming.
-        let pointer_frac = if let Some(pos) = ui.input().pointer.interact_pos() {
+        let pointer_frac = if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             (pos.x - rect.left()) / rect.width()
         } else {
             0.5
@@ -130,10 +130,10 @@ impl SinglePlot {
         }
 
         // Repaint to update graph after scroll
-        ctxt.request_repaint();
+        ctx.request_repaint();
     }
 
-    pub fn update(&mut self, ctxt: &CtxRef, ui: &mut Ui, rect: Rect, interact: Response) {
+    pub fn update(&mut self, ctx: &egui::Context, ui: &mut Ui, rect: Rect, interact: Response) {
         let painter = ui.painter();
         let max_value = self.points.iter().fold(0.0, |max, value| value.1.max(max));
 
@@ -160,7 +160,7 @@ impl SinglePlot {
         let end_point = first_point + points_to_show;
 
         // Subtract out x axis labels from plot area
-        let axis_label_height = ui.fonts().row_height(FontSize::Normal.into());
+        let axis_label_height = ui.text_style_height(&FontSize::Normal.into());
         let plot_area = Rect::from_min_size(
             rect.left_top(),
             Vec2::new(
@@ -203,12 +203,12 @@ impl SinglePlot {
         };
 
         // Lay out y axis labels
+        let normal_font_id = Into::<TextStyle>::into(FontSize::Normal).resolve(ui.style());
         let mut y_axis_labels = Vec::new();
         let mut value = step;
         let mut max_width = 0.0;
         while (value as f32) < max_value {
-            let galley = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
+            let galley = ui.fonts(|f| f.layout_no_wrap(
                 match self.y_axis {
                     YAxis::Time => {
                         if value >= 60 {
@@ -219,8 +219,10 @@ impl SinglePlot {
                     }
                     _ => format!("{}", value),
                 },
-            );
-            max_width = galley.size.x.max(max_width);
+                normal_font_id.clone(),
+                Color32::PLACEHOLDER,
+            ));
+            max_width = galley.size().x.max(max_width);
             y_axis_labels.push((
                 galley,
                 plot_area.top() + plot_area.height() * (1.0 - value as f32 / max_value),
@@ -250,9 +252,8 @@ impl SinglePlot {
             let day = short_day_string(&value.0);
             if Some(day.clone()) != last_day {
                 let galley = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Normal.into(), day.clone());
-                let width = galley.size.x;
+                    .fonts(|f| f.layout_no_wrap(day.clone(), normal_font_id.clone(), Color32::PLACEHOLDER));
+                let width = galley.size().x;
 
                 let x = plot_area.left()
                     + plot_area.width() * idx as f32 / (points_to_show / combined_points) as f32;
@@ -313,8 +314,8 @@ impl SinglePlot {
         for label in y_axis_labels {
             painter.galley(
                 Pos2::new(
-                    plot_area.left() - AXIS_PADDING - label.0.size.x,
-                    label.1 - label.0.size.y / 2.0,
+                    plot_area.left() - AXIS_PADDING - label.0.size().x,
+                    label.1 - label.0.size().y / 2.0,
                 ),
                 label.0,
                 Theme::Content.into(),
@@ -415,7 +416,7 @@ impl SinglePlot {
         painter.add(Shape::mesh(Mesh {
             indices: idx,
             vertices: verts,
-            texture_id: TextureId::Egui,
+            texture_id: TextureId::default(),
         }));
 
         // Draw line in graph
@@ -426,20 +427,21 @@ impl SinglePlot {
                     width: 2.0,
                     color: self.color,
                 },
-            )
+            );
         }
 
         if interact.dragged() {
+            let delta = ui.input(|i| i.pointer.delta());
             self.update_zoom(
-                ctxt,
+                ctx,
                 ui,
-                ui.input().pointer.delta().x,
-                ui.input().pointer.delta().y,
+                delta.x,
+                delta.y,
                 &plot_area,
             );
         } else if ui.rect_contains_pointer(rect) {
-            let scroll_delta = ctxt.input().scroll_delta;
-            self.update_zoom(ctxt, ui, scroll_delta.x, scroll_delta.y, &plot_area);
+            let scroll_delta = ctx.input(|i| i.raw_scroll_delta);
+            self.update_zoom(ctx, ui, scroll_delta.x, scroll_delta.y, &plot_area);
         }
     }
 }

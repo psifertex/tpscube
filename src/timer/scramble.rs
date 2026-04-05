@@ -8,7 +8,7 @@ use crate::timer::state::TimerState;
 use crate::timer::BluetoothEvent;
 use crate::widgets::fit_scramble;
 use anyhow::Result;
-use egui::{CtxRef, Pos2, Rect, Response, Sense, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, Response, Sense, TextStyle, Ui, Vec2};
 use tpscube_core::{
     scramble_2x2x2, scramble_3x3x3, Cube, Cube2x2x2, Cube3x3x3, InitialCubeState, Move,
     MoveSequence, SolveType,
@@ -309,15 +309,17 @@ impl TimerCube {
         rect: &mut Rect,
         center: &mut Pos2,
     ) {
-        let scramble_galley = ui
-            .fonts()
-            .layout_single_line(FontSize::Small.into(), "↺  New scramble".into());
+        let font_id = TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Small))
+            .resolve(ui.style());
+        let scramble_galley = ui.fonts(|f| {
+            f.layout_no_wrap("↺  New scramble".into(), font_id, Color32::PLACEHOLDER)
+        });
         let new_scramble_rect = Rect::from_center_size(
             Pos2::new(
                 rect.center().x,
-                rect.top() + NEW_SCRAMBLE_PADDING + scramble_galley.size.y / 2.0,
+                rect.top() + NEW_SCRAMBLE_PADDING + scramble_galley.size().y / 2.0,
             ),
-            scramble_galley.size,
+            scramble_galley.size(),
         );
         let interact = ui.allocate_rect(new_scramble_rect, Sense::click());
         ui.painter().galley(
@@ -406,13 +408,13 @@ impl TimerCube {
             )
         };
 
-        let scramble_line_height = ui.fonts().row_height(FontSize::Scramble.into());
+        let scramble_line_height = ui.text_style_height(&FontSize::Scramble.into());
         let min_scramble_height = scramble_line_height * scramble.len() as f32;
         let scramble_height = min_scramble_height.max(target_scramble_height);
 
         let analysis_height = analysis.height(ui);
 
-        let min_timer_height = ui.fonts().row_height(FontSize::Timer.into());
+        let min_timer_height = ui.text_style_height(&FontSize::Timer.into());
         let timer_overlap = min_timer_height * if analysis.present() { 0.2 } else { 0.4 };
         let timer_height = min_timer_height
             .max(target_timer_height)
@@ -431,32 +433,41 @@ impl TimerCube {
         let mut move_idx = 0;
         for (line_idx, line) in scramble.iter().enumerate() {
             // Layout individual moves in the scramble
+            let scramble_font_id =
+                TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Scramble))
+                    .resolve(ui.style());
             let mut tokens = Vec::new();
             if fix && line_idx == 0 {
-                tokens.push(ui.fonts().layout_single_line(
-                    FontSize::Scramble.into(),
-                    "Scramble incorrect, fix with".into(),
-                ));
+                tokens.push(ui.fonts(|f| {
+                    f.layout_no_wrap(
+                        "Scramble incorrect, fix with".into(),
+                        scramble_font_id.clone(),
+                        Color32::PLACEHOLDER,
+                    )
+                }));
             } else {
                 for (idx, mv) in line.iter().enumerate() {
-                    tokens.push(ui.fonts().layout_single_line(
-                        FontSize::Scramble.into(),
-                        if idx == 0 {
-                            mv.to_string()
-                        } else {
-                            format!("  {}", mv.to_string())
-                        },
-                    ));
+                    tokens.push(ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            if idx == 0 {
+                                mv.to_string()
+                            } else {
+                                format!("  {}", mv.to_string())
+                            },
+                            scramble_font_id.clone(),
+                            Color32::PLACEHOLDER,
+                        )
+                    }));
                 }
             }
 
             // Determine line width and center on screen
-            let line_width = tokens.iter().fold(0.0, |sum, token| sum + token.size.x);
+            let line_width = tokens.iter().fold(0.0, |sum, token| sum + token.size().x);
             let mut x = center.x - line_width / 2.0;
 
             // Render individual moves
             for token in tokens {
-                let width = token.size.x;
+                let width = token.size().x;
                 ui.painter().galley(
                     Pos2::new(x, y),
                     token,
@@ -496,10 +507,17 @@ impl TimerCube {
         }
 
         // Layout timer
-        let timer_galley = ui
-            .fonts()
-            .layout_single_line(FontSize::Timer.into(), state.current_time_string());
-        let timer_width = timer_galley.size.x;
+        let timer_font_id =
+            TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Timer))
+                .resolve(ui.style());
+        let timer_galley = ui.fonts(|f| {
+            f.layout_no_wrap(
+                state.current_time_string(),
+                timer_font_id,
+                Color32::PLACEHOLDER,
+            )
+        });
+        let timer_width = timer_galley.size().x;
 
         // Determine target width of analysis region
         let analysis_width = rect.width() - timer_width - ANALYSIS_MIN_PADDING * 2.0;
@@ -519,8 +537,8 @@ impl TimerCube {
         } else {
             center.x - timer_width / 2.0
         };
-        let timer_width = timer_galley.size.x;
-        let move_count_height = ui.fonts().row_height(FontSize::Normal.into());
+        let timer_width = timer_galley.size().x;
+        let move_count_height = ui.text_style_height(&FontSize::Normal.into());
         let timer_y = rect.bottom()
             - (timer_height / 2.0 + timer_padding)
             - (min_timer_height
@@ -538,11 +556,17 @@ impl TimerCube {
 
         // Render move count below timer is analysis is present
         if analysis.present() {
-            let move_count_galley = ui.fonts().layout_single_line(
-                FontSize::Normal.into(),
-                format!("{} moves", analysis.move_count()),
-            );
-            let move_count_width = move_count_galley.size.x;
+            let normal_font_id =
+                TextStyle::from(<FontSize as Into<TextStyle>>::into(FontSize::Normal))
+                    .resolve(ui.style());
+            let move_count_galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    format!("{} moves", analysis.move_count()),
+                    normal_font_id,
+                    Color32::PLACEHOLDER,
+                )
+            });
+            let move_count_width = move_count_galley.size().x;
             ui.painter().galley(
                 Pos2::new(
                     timer_x + timer_width / 2.0 - move_count_width / 2.0,
@@ -576,30 +600,29 @@ impl TimerCube {
 
     pub fn paint_cube(
         &mut self,
-        ctxt: &CtxRef,
-        gl: &mut GlContext<'_, '_>,
+        ctx: &egui::Context,
+        gl: &mut GlContext<'_>,
         rect: &Rect,
     ) -> Result<()> {
-        self.renderer.draw(ctxt, gl, rect)
+        self.renderer.draw(ctx, gl, rect)
     }
 
     pub fn rotate_cube_with_input(
         &mut self,
-        ctxt: &CtxRef,
+        ctx: &egui::Context,
         ui: &Ui,
         cube_rect: &Option<Rect>,
         interact: Response,
     ) {
         if cube_rect.is_some() && ui.rect_contains_pointer(cube_rect.unwrap()) {
-            let scroll_delta = ctxt.input().scroll_delta;
+            let scroll_delta = ctx.input(|i| i.raw_scroll_delta);
             self.renderer
                 .adjust_angle(scroll_delta.x / 3.0, scroll_delta.y / 3.0);
         }
         if crate::is_mobile() != Some(true) && interact.dragged() {
-            self.renderer.adjust_angle(
-                ui.input().pointer.delta().x / 3.0,
-                ui.input().pointer.delta().y / 3.0,
-            );
+            let pointer_delta = ui.input(|i| i.pointer.delta());
+            self.renderer
+                .adjust_angle(pointer_delta.x / 3.0, pointer_delta.y / 3.0);
         }
     }
 

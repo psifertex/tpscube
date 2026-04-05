@@ -4,7 +4,7 @@ use crate::theme::Theme;
 use crate::widgets::CustomWidgets;
 use anyhow::Result;
 use egui::{
-    containers::ScrollArea, popup_below_widget, widgets::Label, CentralPanel, CtxRef,
+    containers::ScrollArea, widgets::Label, CentralPanel, RichText,
     SelectableLabel, Sense, Stroke,
 };
 use tpscube_core::{History, SyncRequest};
@@ -73,19 +73,19 @@ impl Settings {
         }
     }
 
-    pub fn update(&mut self, ctxt: &CtxRef, _frame: &mut epi::Frame<'_>, history: &mut History) {
-        ctxt.set_visuals(settings_visuals());
-        CentralPanel::default().show(ctxt, |ui| {
+    pub fn update(&mut self, ctx: &egui::Context, history: &mut History) {
+        ctx.set_visuals(settings_visuals());
+        CentralPanel::default().show(ctx, |ui| {
             ui.visuals_mut().widgets.inactive.bg_fill = Theme::BackgroundHighlight.into();
             ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
             ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
-            ScrollArea::auto_sized().show(ui, |ui| {
+            ScrollArea::vertical().show(ui, |ui| {
                 ui.vertical(|ui| {
                     ui.section("Session Management");
 
                     if ui
                         .add(
-                            Label::new(format!(
+                            Label::new(RichText::new(format!(
                                 "{}  Automatic sessions",
                                 if Self::auto_sessions_enabled(history) {
                                     "☑"
@@ -93,7 +93,7 @@ impl Settings {
                                     "☐"
                                 }
                             ))
-                            .text_style(FontSize::Section.into())
+                            .text_style(FontSize::Section.into()))
                             .sense(Sense::click()),
                         )
                         .clicked()
@@ -107,7 +107,7 @@ impl Settings {
                             "Automatically create a new session after a period of time \
                                 has passed.",
                         )
-                        .wrap(true),
+                        .wrap_mode(egui::TextWrapMode::Wrap),
                     );
 
                     if Self::auto_sessions_enabled(history) {
@@ -124,14 +124,14 @@ impl Settings {
 
                         let popup_id = ui.make_persistent_id("auto-session-time");
                         let response = ui.add(
-                            Label::new(format!("⏰  Session Timeout: {} ⏷", session_time_str))
-                                .text_style(FontSize::Section.into())
+                            Label::new(RichText::new(format!("⏰  Session Timeout: {} ⏷", session_time_str))
+                                .text_style(FontSize::Section.into()))
                                 .sense(Sense::click()),
                         );
                         if response.clicked() {
-                            ui.memory().toggle_popup(popup_id);
+                            ui.memory_mut(|m| m.toggle_popup(popup_id));
                         }
-                        popup_below_widget(ui, popup_id, &response, |ui| {
+                        egui::popup_below_widget(ui, popup_id, &response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                             ui.set_min_width(180.0);
                             for time in &[1800, 3600, 3600 * 2, 3600 * 4, 3600 * 8, 3600 * 12] {
                                 let item_time_str = if *time >= 7200 {
@@ -145,9 +145,8 @@ impl Settings {
                                     .add(
                                         SelectableLabel::new(
                                             auto_session_time == *time,
-                                            item_time_str,
-                                        )
-                                        .text_style(FontSize::Normal.into()),
+                                            RichText::new(item_time_str).text_style(FontSize::Normal.into()),
+                                        ),
                                     )
                                     .clicked()
                                 {
@@ -161,15 +160,15 @@ impl Settings {
                                 "If there have not been any solves in this amount of time, a new \
                                     session will be automatically created.",
                             )
-                            .wrap(true),
+                            .wrap_mode(egui::TextWrapMode::Wrap),
                         );
 
                         ui.add_space(8.0);
 
                         if ui
                             .add(
-                                Label::new("🗄  Organize sessions")
-                                    .text_style(FontSize::Section.into())
+                                Label::new(RichText::new("🗄  Organize sessions")
+                                    .text_style(FontSize::Section.into()))
                                     .sense(Sense::click()),
                             )
                             .clicked()
@@ -180,8 +179,8 @@ impl Settings {
                         }
                         if let Some(message) = &self.organize_result {
                             ui.add(
-                                Label::new(format!("Organization complete.\n{}", message))
-                                    .text_color(Theme::Green),
+                                Label::new(RichText::new(format!("Organization complete.\n{}", message))
+                                    .color(Theme::Green)),
                             );
                         }
                         ui.add(
@@ -191,7 +190,7 @@ impl Settings {
                                     split into multiple sessions. Named sessions will not be \
                                     affected.",
                             )
-                            .wrap(true),
+                            .wrap_mode(egui::TextWrapMode::Wrap),
                         );
                     }
 
@@ -201,7 +200,7 @@ impl Settings {
                     // Show sync key option
                     if ui
                         .add(
-                            Label::new(format!(
+                            Label::new(RichText::new(format!(
                                 "👁  {} sync key",
                                 if self.sync_key_visible {
                                     "Hide"
@@ -209,7 +208,7 @@ impl Settings {
                                     "Show"
                                 }
                             ))
-                            .text_style(FontSize::Section.into())
+                            .text_style(FontSize::Section.into()))
                             .sense(Sense::click()),
                         )
                         .clicked()
@@ -218,19 +217,19 @@ impl Settings {
                     }
                     if self.sync_key_visible {
                         ui.add(
-                            Label::new(history.sync_key())
+                            Label::new(RichText::new(history.sync_key())
                                 .text_style(FontSize::Scramble.into())
-                                .text_color(Theme::Yellow),
+                                .color(Theme::Yellow)),
                         );
                         if ui
                             .add(
-                                Label::new("🗐  Copy")
-                                    .text_style(FontSize::Section.into())
+                                Label::new(RichText::new("🗐  Copy")
+                                    .text_style(FontSize::Section.into()))
                                     .sense(Sense::click()),
                             )
                             .clicked()
                         {
-                            ui.output().copied_text = history.sync_key().into();
+                            ui.output_mut(|o| o.copied_text = history.sync_key().into());
                         }
                     }
                     ui.add(
@@ -244,7 +243,7 @@ impl Settings {
                                 "Show"
                             }
                         ))
-                        .wrap(true),
+                        .wrap_mode(egui::TextWrapMode::Wrap),
                     );
 
                     ui.add_space(8.0);
@@ -252,8 +251,8 @@ impl Settings {
                     // Set sync key option
                     if ui
                         .add(
-                            Label::new("🗝  Set sync key")
-                                .text_style(FontSize::Section.into())
+                            Label::new(RichText::new("🗝  Set sync key")
+                                .text_style(FontSize::Section.into()))
                                 .sense(Sense::click()),
                         )
                         .clicked()
@@ -266,13 +265,13 @@ impl Settings {
                                 set your sync key here to sync with them. You can view \
                                 your sync key on any device that is already being synced.",
                         )
-                        .wrap(true),
+                        .wrap_mode(egui::TextWrapMode::Wrap),
                     );
 
                     if self.set_key_visible {
                         // If set sync key is active, show edit box
                         ui.add_space(8.0);
-                        ui.add(Label::new("New sync key: ").text_color(Theme::Yellow));
+                        ui.add(Label::new(RichText::new("New sync key: ").color(Theme::Yellow)));
                         ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke {
                             width: 1.0,
                             color: Theme::Disabled.into(),
@@ -290,13 +289,13 @@ impl Settings {
                         // Validate the sync key being entered
                         if let Some(key) = SyncRequest::validate_sync_key(&self.new_sync_key) {
                             if key == history.sync_key() {
-                                ui.add(Label::new("Key set").text_color(Theme::Green));
+                                ui.add(Label::new(RichText::new("Key set").color(Theme::Green)));
                             } else {
                                 // Sync key is valid and different, allow the user to set it
                                 if ui
                                     .add(
-                                        Label::new("✔  Save")
-                                            .text_style(FontSize::Section.into())
+                                        Label::new(RichText::new("✔  Save")
+                                            .text_style(FontSize::Section.into()))
                                             .sense(Sense::click()),
                                     )
                                     .clicked()
@@ -306,7 +305,7 @@ impl Settings {
                             }
                         } else {
                             // Sync key is not valid, show error
-                            ui.add(Label::new("(Not valid)").text_color(Theme::Red));
+                            ui.add(Label::new(RichText::new("(Not valid)").color(Theme::Red)));
                         }
                     }
 
@@ -318,8 +317,8 @@ impl Settings {
                         // Import solves option
                         if ui
                             .add(
-                                Label::new("🗁  Import solves")
-                                    .text_style(FontSize::Section.into())
+                                Label::new(RichText::new("🗁  Import solves")
+                                    .text_style(FontSize::Section.into()))
                                     .sense(Sense::click()),
                             )
                             .clicked()
@@ -330,15 +329,15 @@ impl Settings {
                             match result {
                                 Ok(message) => {
                                     ui.add(
-                                        Label::new(format!("Import complete.\n{}", message))
-                                            .text_color(Theme::Green),
+                                        Label::new(RichText::new(format!("Import complete.\n{}", message))
+                                            .color(Theme::Green)),
                                     );
                                 }
                                 Err(error) => {
                                     ui.add(
-                                        Label::new(format!("Error: {}", error))
-                                            .wrap(true)
-                                            .text_color(Theme::Red),
+                                        Label::new(RichText::new(format!("Error: {}", error))
+                                            .color(Theme::Red))
+                                            .wrap_mode(egui::TextWrapMode::Wrap),
                                     );
                                 }
                             }
@@ -348,7 +347,7 @@ impl Settings {
                                 "Import solves from a backup. Supports backups from \
                                TPS Cube, csTimer, and Cubeast.",
                             )
-                            .wrap(true),
+                            .wrap_mode(egui::TextWrapMode::Wrap),
                         );
 
                         ui.add_space(8.0);
@@ -356,8 +355,8 @@ impl Settings {
                         // Export solves option
                         if ui
                             .add(
-                                Label::new("🗐  Export solves")
-                                    .text_style(FontSize::Section.into())
+                                Label::new(RichText::new("🗐  Export solves")
+                                    .text_style(FontSize::Section.into()))
                                     .sense(Sense::click()),
                             )
                             .clicked()
@@ -367,13 +366,13 @@ impl Settings {
                         if let Some(result) = &self.export_result {
                             match result {
                                 Ok(()) => {
-                                    ui.add(Label::new("Export complete.").text_color(Theme::Green));
+                                    ui.add(Label::new(RichText::new("Export complete.").color(Theme::Green)));
                                 }
                                 Err(error) => {
                                     ui.add(
-                                        Label::new(format!("Error: {}", error))
-                                            .wrap(true)
-                                            .text_color(Theme::Red),
+                                        Label::new(RichText::new(format!("Error: {}", error))
+                                            .color(Theme::Red))
+                                            .wrap_mode(egui::TextWrapMode::Wrap),
                                     );
                                 }
                             }

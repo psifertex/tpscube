@@ -8,8 +8,8 @@ use crate::widgets::CustomWidgets;
 use anyhow::Result;
 use data::{CFOPPhase, GraphData, Phase, Statistic};
 use egui::{
-    Align, CentralPanel, CtxRef, Direction, Label, Layout, Pos2, Rect, ScrollArea, Sense,
-    SidePanel, Stroke, TopBottomPanel, Ui, Vec2,
+    Align, CentralPanel, Color32, Direction, Label, Layout, Pos2, Rect, RichText, ScrollArea,
+    Sense, SidePanel, Stroke, TextStyle, TopBottomPanel, Ui, Vec2,
 };
 use plot::Plot;
 use tpscube_core::{History, SolveType};
@@ -213,16 +213,15 @@ impl GraphWidget {
         }
     }
 
-    fn landscape_sidebar(&mut self, ctxt: &CtxRef, history: &mut History, solve_type: SolveType) {
+    fn landscape_sidebar(&mut self, ctx: &egui::Context, history: &mut History, solve_type: SolveType) {
         SidePanel::left("left_graph_options")
             .default_width(160.0)
             .resizable(false)
-            .show(ctxt, |ui| {
+            .show(ctx, |ui| {
                 ui.visuals_mut().widgets.inactive.bg_fill = Theme::BackgroundHighlight.into();
                 ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
                 ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
-                ScrollArea::auto_sized()
-                    .always_show_scroll(false)
+                ScrollArea::vertical()
                     .id_source("left_graph_options_scroll")
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
@@ -246,8 +245,8 @@ impl GraphWidget {
             });
     }
 
-    fn portrait_top_bar(&mut self, ctxt: &CtxRef, history: &mut History, solve_type: SolveType) {
-        TopBottomPanel::top("top_graph_options").show(ctxt, |ui| {
+    fn portrait_top_bar(&mut self, ctx: &egui::Context, history: &mut History, solve_type: SolveType) {
+        TopBottomPanel::top("top_graph_options").show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.with_layout(
                     Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::TOP),
@@ -384,8 +383,7 @@ impl GraphWidget {
 
     pub fn update(
         &mut self,
-        ctxt: &CtxRef,
-        _frame: &mut epi::Frame<'_>,
+        ctx: &egui::Context,
         history: &mut History,
         solve_type: SolveType,
     ) {
@@ -393,18 +391,18 @@ impl GraphWidget {
             self.restore_settings(history);
         }
 
-        ctxt.set_visuals(side_visuals());
-        let aspect = ctxt.available_rect().width() / ctxt.available_rect().height();
+        ctx.set_visuals(side_visuals());
+        let aspect = ctx.available_rect().width() / ctx.available_rect().height();
         if aspect >= 1.0 {
             // Landscape mode. Graph options to the left.
-            self.landscape_sidebar(ctxt, history, solve_type);
+            self.landscape_sidebar(ctx, history, solve_type);
         } else {
             // Portrait mode. Graph options at the top.
-            self.portrait_top_bar(ctxt, history, solve_type);
+            self.portrait_top_bar(ctx, history, solve_type);
         }
 
-        ctxt.set_visuals(content_visuals());
-        CentralPanel::default().show(ctxt, |ui| {
+        ctx.set_visuals(content_visuals());
+        CentralPanel::default().show(ctx, |ui| {
             if self.update_id != Some(history.update_id()) || self.solve_type != solve_type {
                 // If history has been updated, regenerate plot
                 self.plot = None;
@@ -432,11 +430,11 @@ impl GraphWidget {
                 let rect = ui.max_rect();
 
                 // Draw graph title
+                let font_id = Into::<TextStyle>::into(FontSize::Section).resolve(ui.style());
                 let title_galley = ui
-                    .fonts()
-                    .layout_single_line(FontSize::Section.into(), plot.title().to_string());
-                let title_width = title_galley.size.x;
-                let title_height = title_galley.size.y;
+                    .fonts(|f| f.layout_no_wrap(plot.title().to_string(), font_id, Color32::PLACEHOLDER));
+                let title_width = title_galley.size().x;
+                let title_height = title_galley.size().y;
                 painter.galley(
                     Pos2::new(rect.center().x - title_width / 2.0, rect.top()),
                     title_galley,
@@ -456,16 +454,15 @@ impl GraphWidget {
                 );
 
                 let interact = ui.allocate_rect(rect, Sense::click_and_drag());
-                plot.update(ctxt, ui, rect, interact);
+                plot.update(ctx, ui, rect, interact);
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.add(
-                        Label::new(if self.requires_analysis() {
+                        Label::new(RichText::new(if self.requires_analysis() {
                             "Bluetooth solves are required for this graph"
                         } else {
                             "Not enough data for this graph"
-                        })
-                        .text_color(Theme::Disabled),
+                        }).color(Theme::Disabled)),
                     );
                 });
             }

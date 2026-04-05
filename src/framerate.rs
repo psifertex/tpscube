@@ -1,4 +1,3 @@
-use epi::RepaintSignal;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -10,7 +9,7 @@ const DEFAULT_MAX_FRAMERATE: u32 = 60;
 
 struct CurrentFramerateData {
     framerate: u32,
-    repaint: Arc<dyn RepaintSignal>,
+    repaint: egui::Context,
     running: bool,
 }
 
@@ -30,7 +29,7 @@ struct CurrentFramerate {
 
 pub struct Framerate {
     current: Mutex<CurrentFramerate>,
-    repaint: Arc<dyn RepaintSignal>,
+    repaint: egui::Context,
     pending_request: Option<u32>,
     max: u32,
 }
@@ -50,7 +49,7 @@ pub struct IntervalHandle {
 }
 
 impl Framerate {
-    pub fn new(repaint: Arc<dyn RepaintSignal>) -> Self {
+    pub fn new(repaint: egui::Context) -> Self {
         #[cfg(target_arch = "wasm32")]
         let current = CurrentFramerate {
             target: None,

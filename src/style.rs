@@ -11,11 +11,12 @@ pub fn base_visuals() -> Visuals {
         widgets: Widgets {
             noninteractive: WidgetVisuals {
                 bg_fill: Theme::BackgroundWindow.into(),
+                weak_bg_fill: Theme::BackgroundWindow.into(),
                 bg_stroke: Stroke {
                     width: 1.0,
                     color: Color32::TRANSPARENT,
                 },
-                corner_radius: 0.0,
+                corner_radius: egui::CornerRadius::ZERO,
                 fg_stroke: Stroke {
                     width: 1.0,
                     color: Theme::Content.into(),
@@ -24,11 +25,12 @@ pub fn base_visuals() -> Visuals {
             },
             inactive: WidgetVisuals {
                 bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: Color32::TRANSPARENT,
                 bg_stroke: Stroke {
                     width: 1.0,
                     color: Color32::TRANSPARENT,
                 },
-                corner_radius: 0.0,
+                corner_radius: egui::CornerRadius::ZERO,
                 fg_stroke: Stroke {
                     width: 1.0,
                     color: Theme::Disabled.into(),
@@ -37,11 +39,12 @@ pub fn base_visuals() -> Visuals {
             },
             hovered: WidgetVisuals {
                 bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: Color32::TRANSPARENT,
                 bg_stroke: Stroke {
                     width: 1.0,
                     color: Color32::TRANSPARENT,
                 },
-                corner_radius: 0.0,
+                corner_radius: egui::CornerRadius::ZERO,
                 fg_stroke: Stroke {
                     width: 1.0,
                     color: Theme::Content.into(),
@@ -50,11 +53,12 @@ pub fn base_visuals() -> Visuals {
             },
             active: WidgetVisuals {
                 bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: Color32::TRANSPARENT,
                 bg_stroke: Stroke {
                     width: 1.0,
                     color: Color32::TRANSPARENT,
                 },
-                corner_radius: 0.0,
+                corner_radius: egui::CornerRadius::ZERO,
                 fg_stroke: Stroke {
                     width: 1.0,
                     color: Theme::Green.into(),
@@ -63,11 +67,12 @@ pub fn base_visuals() -> Visuals {
             },
             open: WidgetVisuals {
                 bg_fill: Color32::TRANSPARENT,
+                weak_bg_fill: Color32::TRANSPARENT,
                 bg_stroke: Stroke {
                     width: 1.0,
                     color: Color32::TRANSPARENT,
                 },
-                corner_radius: 0.0,
+                corner_radius: egui::CornerRadius::ZERO,
                 fg_stroke: Stroke {
                     width: 1.0,
                     color: Theme::Green.into(),
@@ -85,9 +90,11 @@ pub fn base_visuals() -> Visuals {
         extreme_bg_color: Theme::BackgroundDark.into(),
         hyperlink_color: Theme::Blue.into(),
         code_bg_color: Theme::BackgroundDark.into(),
-        window_corner_radius: 0.0,
+        window_corner_radius: egui::CornerRadius::ZERO,
         window_shadow: Shadow {
-            extrusion: 12.0,
+            offset: [0, 2],
+            blur: 12,
+            spread: 0,
             color: Color32::from_rgba_premultiplied(0, 0, 0, 160),
         },
         ..Default::default()
