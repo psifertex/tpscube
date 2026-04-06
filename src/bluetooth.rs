@@ -222,7 +222,7 @@ impl BluetoothState {
                                 )
                                 .clicked()
                             {
-                                match cube.connect(device.address) {
+                                match cube.connect(device.id.clone()) {
                                     Ok(_) => self.mode = BluetoothMode::WaitForConnection,
                                     Err(error) => {
                                         self.mode = BluetoothMode::Error;

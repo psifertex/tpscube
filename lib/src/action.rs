@@ -64,7 +64,7 @@ struct ActionBundle {
 impl StoredAction {
     pub fn new(action: Action) -> Self {
         Self {
-            id: Uuid::new_v4().to_simple().to_string(),
+            id: Uuid::new_v4().simple().to_string(),
             action,
         }
     }
@@ -759,7 +759,7 @@ impl<'a> Iterator for ActionListIterator<'a> {
 impl ActionBundle {
     fn new() -> Self {
         Self {
-            id: Uuid::new_v4().to_simple().to_string(),
+            id: Uuid::new_v4().simple().to_string(),
             actions: Vec::new(),
             present_in_index: false,
         }

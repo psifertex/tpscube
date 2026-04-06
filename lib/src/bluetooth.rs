@@ -6,7 +6,8 @@ mod moyu;
 use crate::common::TimedMove;
 use crate::cube3x3x3::Cube3x3x3;
 use anyhow::{anyhow, Result};
-use btleplug::api::{BDAddr, Central, Peripheral};
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use gan::gan_cube_connect;
 use giiker::giiker_connect;
 use gocube::gocube_connect;
@@ -16,13 +17,6 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-#[cfg(target_os = "linux")]
-use btleplug::bluez::{adapter::Adapter, manager::Manager};
-#[cfg(target_os = "macos")]
-use btleplug::corebluetooth::manager::Manager;
-#[cfg(target_os = "windows")]
-use btleplug::winrtble::{adapter::Adapter, manager::Manager};
 
 pub(crate) trait BluetoothCubeDevice: Send {
     fn cube_state(&self) -> Cube3x3x3;
@@ -46,7 +40,7 @@ pub(crate) trait BluetoothCubeDevice: Send {
 
 #[derive(Clone, Debug)]
 pub struct AvailableDevice {
-    pub address: BDAddr,
+    pub id: PeripheralId,
     pub name: String,
     pub cube_type: BluetoothCubeType,
 }
@@ -96,7 +90,7 @@ pub enum BluetoothCubeEvent {
 
 pub struct BluetoothCube {
     discovered_devices: Arc<Mutex<Vec<AvailableDevice>>>,
-    to_connect: Arc<Mutex<Option<BDAddr>>>,
+    to_connect: Arc<Mutex<Option<PeripheralId>>>,
     state: Arc<Mutex<BluetoothCubeState>>,
     connected_device: Arc<Mutex<Option<Box<dyn BluetoothCubeDevice>>>>,
     connected_name: Arc<Mutex<Option<String>>>,
@@ -131,7 +125,16 @@ impl BluetoothCube {
         let listeners_copy = listeners.clone();
         let error_copy = error.clone();
         std::thread::spawn(move || {
-            match Self::discovery_handler(
+            // Create a new tokio runtime for the bluetooth thread
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    *state_copy.lock().unwrap() = BluetoothCubeState::Error;
+                    *error_copy.lock().unwrap() = Some(e.to_string());
+                    return;
+                }
+            };
+            match rt.block_on(Self::discovery_handler(
                 discovered_devices_copy,
                 to_connect_copy,
                 state_copy.clone(),
@@ -139,7 +142,7 @@ impl BluetoothCube {
                 connected_name_copy,
                 battery_copy,
                 listeners_copy,
-            ) {
+            )) {
                 Err(error) => {
                     *state_copy.lock().unwrap() = BluetoothCubeState::Error;
                     *error_copy.lock().unwrap() = Some(error.to_string());
@@ -161,30 +164,30 @@ impl BluetoothCube {
         }
     }
 
-    fn discovery_handler(
+    async fn discovery_handler(
         discovered_devices: Arc<Mutex<Vec<AvailableDevice>>>,
-        to_connect: Arc<Mutex<Option<BDAddr>>>,
+        to_connect: Arc<Mutex<Option<PeripheralId>>>,
         state: Arc<Mutex<BluetoothCubeState>>,
         connected_device: Arc<Mutex<Option<Box<dyn BluetoothCubeDevice>>>>,
         connected_name: Arc<Mutex<Option<String>>>,
         battery: Arc<Mutex<(Option<u32>, Option<bool>)>>,
         listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + Send>>>>,
     ) -> Result<()> {
-        let manager = Manager::new()?;
-        let adapter = manager.adapters()?;
-        let central = adapter
+        let manager = Manager::new().await?;
+        let adapters = manager.adapters().await?;
+        let central: Adapter = adapters
             .into_iter()
             .nth(0)
             .ok_or_else(|| anyhow!("No Bluetooth adapters found"))?;
-        central.start_scan()?;
+        central.start_scan(ScanFilter::default()).await?;
 
         loop {
             // See if the client asked to connect to a cube
-            let to_connect = to_connect.lock().unwrap().clone();
-            if let Some(to_connect) = to_connect {
+            let to_connect_id = to_connect.lock().unwrap().clone();
+            if let Some(to_connect_id) = to_connect_id {
                 // Look for the cube in the device list to get the Peripheral object
-                for device in central.peripherals() {
-                    if to_connect == device.address() {
+                for device in central.peripherals().await? {
+                    if to_connect_id == device.id() {
                         let listeners_copy = listeners.clone();
 
                         // Set up time calibration state
@@ -334,24 +337,25 @@ impl BluetoothCube {
                                     }
                                 }
                             }),
-                        );
+                        )
+                        .await;
                     }
                 }
             }
 
             // Enumerate devices
+            let peripherals = central.peripherals().await?;
             let mut new_devices = Vec::new();
-            for device in central.peripherals() {
-                if let Some(name) = device.properties().local_name {
-                    match BluetoothCubeType::from_name(&name) {
-                        Some(cube_type) => {
+            for device in &peripherals {
+                if let Some(props) = device.properties().await? {
+                    if let Some(name) = props.local_name {
+                        if let Some(cube_type) = BluetoothCubeType::from_name(&name) {
                             new_devices.push(AvailableDevice {
-                                address: device.address(),
+                                id: device.id(),
                                 name: name.clone(),
                                 cube_type,
                             });
                         }
-                        None => (),
                     }
                 }
             }
@@ -359,21 +363,25 @@ impl BluetoothCube {
 
             // Wait before checking devices again. We can't use the event-based system
             // since we also need to check for client connection requests.
-            std::thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
-    fn connect_handler<P: Peripheral + 'static>(
+    async fn connect_handler(
         state: Arc<Mutex<BluetoothCubeState>>,
         connected_device: Arc<Mutex<Option<Box<dyn BluetoothCubeDevice>>>>,
         connected_name: Arc<Mutex<Option<String>>>,
         battery: Arc<Mutex<(Option<u32>, Option<bool>)>>,
-        peripheral: P,
+        peripheral: Peripheral,
         init: Box<dyn Fn(&dyn BluetoothCubeDevice) + Send + 'static>,
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
     ) -> Result<()> {
         // Determine cube type
-        let name = peripheral.properties().local_name.clone();
+        let props = peripheral
+            .properties()
+            .await?
+            .ok_or_else(|| anyhow!("Could not read peripheral properties"))?;
+        let name = props.local_name.clone();
         let cube_type = if let Some(name) = &name {
             match BluetoothCubeType::from_name(&name) {
                 Some(cube_type) => cube_type,
@@ -386,13 +394,14 @@ impl BluetoothCube {
         *state.lock().unwrap() = BluetoothCubeState::Connecting;
 
         // Connect to the cube
-        peripheral.connect()?;
+        peripheral.connect().await?;
+        peripheral.discover_services().await?;
 
         let cube = match cube_type {
-            BluetoothCubeType::GAN => gan_cube_connect(peripheral, move_listener)?,
-            BluetoothCubeType::GoCube => gocube_connect(peripheral, move_listener)?,
-            BluetoothCubeType::Giiker => giiker_connect(peripheral, move_listener)?,
-            BluetoothCubeType::MoYu => moyu_connect(peripheral, move_listener)?,
+            BluetoothCubeType::GAN => gan_cube_connect(peripheral, move_listener).await?,
+            BluetoothCubeType::GoCube => gocube_connect(peripheral, move_listener).await?,
+            BluetoothCubeType::Giiker => giiker_connect(peripheral, move_listener).await?,
+            BluetoothCubeType::MoYu => moyu_connect(peripheral, move_listener).await?,
         };
 
         init(cube.as_ref());
@@ -402,7 +411,7 @@ impl BluetoothCube {
         *state.lock().unwrap() = BluetoothCubeState::Connected;
 
         loop {
-            std::thread::sleep(Duration::from_millis(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
             if let Some(device) = connected_device.lock().unwrap().deref() {
                 device.update();
                 if !device.synced() {
@@ -440,9 +449,9 @@ impl BluetoothCube {
         Ok(self.discovered_devices.lock().unwrap().clone())
     }
 
-    pub fn connect(&self, address: BDAddr) -> Result<()> {
+    pub fn connect(&self, id: PeripheralId) -> Result<()> {
         self.check_for_error()?;
-        *self.to_connect.lock().unwrap() = Some(address);
+        *self.to_connect.lock().unwrap() = Some(id);
         Ok(())
     }
 

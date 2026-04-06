@@ -9,7 +9,9 @@ use aes::{
     Aes128, Block, NewBlockCipher,
 };
 use anyhow::{anyhow, Result};
-use btleplug::api::{Characteristic, Peripheral, WriteType};
+use btleplug::api::{Characteristic, Peripheral as _, WriteType};
+use btleplug::platform::Peripheral;
+use futures::StreamExt;
 use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
@@ -27,8 +29,8 @@ struct GANCubeVersion1Characteristics {
     battery: Characteristic,
 }
 
-struct GANCubeVersion1<P: Peripheral + 'static> {
-    device: P,
+struct GANCubeVersion1 {
+    device: Peripheral,
     state: Mutex<Cube3x3x3>,
     battery_percentage: Mutex<u32>,
     battery_charging: Mutex<bool>,
@@ -43,8 +45,8 @@ struct GANCubeVersion1Cipher {
     device_key: [u8; 16],
 }
 
-struct GANCubeVersion2<P: Peripheral + 'static> {
-    device: P,
+struct GANCubeVersion2 {
+    device: Peripheral,
     state: Arc<Mutex<Cube3x3x3>>,
     battery_percentage: Arc<Mutex<Option<u32>>>,
     battery_charging: Arc<Mutex<Option<bool>>>,
@@ -59,22 +61,22 @@ struct GANCubeVersion2Cipher {
     device_iv: [u8; 16],
 }
 
-struct GANSmartTimer<P: Peripheral + 'static> {
-    device: P,
+struct GANSmartTimer {
+    device: Peripheral,
 }
 
-impl<P: Peripheral> GANCubeVersion1<P> {
+impl GANCubeVersion1 {
     const LAST_MOVE_COUNT_OFFSET: usize = 12;
     const LAST_MOVE_LIST_OFFSET: usize = 13;
 
-    pub fn new(
-        device: P,
+    pub async fn new(
+        device: Peripheral,
         characteristics: GANCubeVersion1Characteristics,
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
         minor_version: u8,
     ) -> Result<Self> {
         // Read device identifier, this is used to derive the key
-        let device_id = device.read(&characteristics.hardware)?;
+        let device_id = device.read(&characteristics.hardware).await?;
         if device_id.len() < 6 {
             return Err(anyhow!("Device identifier invalid"));
         }
@@ -97,7 +99,7 @@ impl<P: Peripheral> GANCubeVersion1<P> {
         let cipher = GANCubeVersion1Cipher { device_key: key };
 
         // Get initial cube state
-        let state = device.read(&characteristics.cube_state)?;
+        let state = device.read(&characteristics.cube_state).await?;
         if state.len() < 18 {
             return Err(anyhow!("Cube state is invalid"));
         }
@@ -106,7 +108,7 @@ impl<P: Peripheral> GANCubeVersion1<P> {
         let state = Mutex::new(state);
 
         // Get the initial move count
-        let moves = device.read(&characteristics.last_moves)?;
+        let moves = device.read(&characteristics.last_moves).await?;
         if moves.len() < 19 {
             return Err(anyhow!("Invalid last move data"));
         }
@@ -114,7 +116,7 @@ impl<P: Peripheral> GANCubeVersion1<P> {
         let last_move_count = Mutex::new(moves[Self::LAST_MOVE_COUNT_OFFSET]);
 
         // Get battery state
-        let battery = device.read(&characteristics.battery)?;
+        let battery = device.read(&characteristics.battery).await?;
         if battery.len() < 8 {
             return Err(anyhow!("Battery state is invalid"));
         }
@@ -192,14 +194,15 @@ impl<P: Peripheral> GANCubeVersion1<P> {
             return Err(anyhow!("Not synced"));
         }
 
-        // Read move data and move timing data
-        let move_data = self.device.read(&self.characteristics.last_moves)?;
+        // Read move data and move timing data (blocking from sync context)
+        let handle = tokio::runtime::Handle::current();
+        let move_data = handle.block_on(self.device.read(&self.characteristics.last_moves))?;
         if move_data.len() < 19 {
             return Err(anyhow!("Invalid last move data"));
         }
         let move_data = self.cipher.decrypt(&move_data)?;
 
-        let timing = self.device.read(&self.characteristics.timing)?;
+        let timing = handle.block_on(self.device.read(&self.characteristics.timing))?;
         if timing.len() < 19 {
             return Err(anyhow!("Invalid timing data"));
         }
@@ -280,7 +283,7 @@ impl<P: Peripheral> GANCubeVersion1<P> {
     }
 }
 
-impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion1<P> {
+impl BluetoothCubeDevice for GANCubeVersion1 {
     fn cube_state(&self) -> Cube3x3x3 {
         self.state.lock().unwrap().clone()
     }
@@ -299,11 +302,12 @@ impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion1<P> {
             0x00, 0x00, 0x24, 0x00, 0x49, 0x92, 0x24, 0x49, 0x6d, 0x92, 0xdb, 0xb6, 0x49, 0x92,
             0xb6, 0x24, 0x6d, 0xdb,
         ];
-        let _ = self.device.write(
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.write(
             &self.characteristics.cube_state,
             &message,
             WriteType::WithResponse,
-        );
+        ));
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }
@@ -319,7 +323,8 @@ impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion1<P> {
     }
 
     fn disconnect(&self) {
-        let _ = self.device.disconnect();
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.disconnect());
     }
 
     // Older GAN cubes have *very* uncalibrated clocks
@@ -363,7 +368,7 @@ impl GANCubeVersion1Cipher {
     }
 }
 
-impl<P: Peripheral> GANCubeVersion2<P> {
+impl GANCubeVersion2 {
     const CUBE_MOVES_MESSAGE: u8 = 2;
     const CUBE_STATE_MESSAGE: u8 = 4;
     const BATTERY_STATE_MESSAGE: u8 = 9;
@@ -371,16 +376,19 @@ impl<P: Peripheral> GANCubeVersion2<P> {
 
     const CUBE_STATE_TIMEOUT_MS: usize = 2000;
 
-    pub fn new(
-        device: P,
+    pub async fn new(
+        device: Peripheral,
         read: Characteristic,
         write: Characteristic,
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
     ) -> Result<Self> {
         // Derive keys. These are based on a 6 byte device identifier found in the
         // manufacturer data.
-        let device_key: [u8; 6] = if let Some(data) = device.properties().manufacturer_data.get(&1)
-        {
+        let props = device
+            .properties()
+            .await?
+            .ok_or_else(|| anyhow!("Could not read peripheral properties"))?;
+        let device_key: [u8; 6] = if let Some(data) = props.manufacturer_data.get(&1) {
             if data.len() >= 9 {
                 let mut result = [0; 6];
                 result.copy_from_slice(&data[3..9]);
@@ -415,7 +423,7 @@ impl<P: Peripheral> GANCubeVersion2<P> {
         let state_set = Arc::new(Mutex::new(false));
         let battery_percentage = Arc::new(Mutex::new(None));
         let battery_charging = Arc::new(Mutex::new(None));
-        let last_move_count = Mutex::new(None);
+        let last_move_count = Arc::new(Mutex::new(None));
         let synced = Arc::new(Mutex::new(true));
 
         let cipher_copy = cipher.clone();
@@ -424,170 +432,153 @@ impl<P: Peripheral> GANCubeVersion2<P> {
         let battery_percentage_copy = battery_percentage.clone();
         let battery_charging_copy = battery_charging.clone();
         let synced_copy = synced.clone();
+        let last_move_count_copy = last_move_count.clone();
 
-        device.on_notification(Box::new(move |value| {
-            if let Ok(value) = cipher_copy.decrypt(&value.value) {
-                let message_type = Self::extract_bits(&value, 0, 4) as u8;
-                match message_type {
-                    Self::CUBE_MOVES_MESSAGE => {
-                        let current_move_count = Self::extract_bits(&value, 4, 8) as u8;
+        // Subscribe and spawn notification handler
+        device.subscribe(&read).await?;
+        let mut notification_stream = device.notifications().await?;
 
-                        // If we haven't received a cube state message yet, we can't know what
-                        // the curent cube state is. Ignore moves until the cube state message
-                        // is received. If there has been a cube state message, we will have
-                        // a last move count and we can continue.
-                        let mut last_move_count_option = last_move_count.lock().unwrap();
-                        if let Some(last_move_count) = *last_move_count_option {
-                            // Check number of moves since last message.
-                            let move_count =
-                                current_move_count.wrapping_sub(last_move_count) as usize;
-                            if move_count > 7 {
-                                // There are too many moves since the last message. Our cube
-                                // state is out of sync. Let the client know and reset the
-                                // last move count such that we don't parse any more move
-                                // messages, since they aren't valid anymore.
-                                *synced_copy.lock().unwrap() = false;
-                                *last_move_count_option = None;
-                                return;
-                            }
+        tokio::spawn(async move {
+            while let Some(value) = notification_stream.next().await {
+                if let Ok(value) = cipher_copy.decrypt(&value.value) {
+                    let message_type = Self::extract_bits(&value, 0, 4) as u8;
+                    match message_type {
+                        Self::CUBE_MOVES_MESSAGE => {
+                            let current_move_count = Self::extract_bits(&value, 4, 8) as u8;
 
-                            // Gather the moves
-                            let mut moves = Vec::with_capacity(move_count);
-                            for j in 0..move_count {
-                                // Build move list in reverse order. In the packet the moves
-                                // are from the latest move to the oldest move, but the callback
-                                // should take the moves in the order they happened.
-                                let i = (move_count - 1) - j;
-
-                                // Decode move data
-                                let move_num = Self::extract_bits(&value, 12 + i * 5, 5) as usize;
-                                let move_time = Self::extract_bits(&value, 12 + 7 * 5 + i * 16, 16);
-                                const MOVES: &[Move] = &[
-                                    Move::U,
-                                    Move::Up,
-                                    Move::R,
-                                    Move::Rp,
-                                    Move::F,
-                                    Move::Fp,
-                                    Move::D,
-                                    Move::Dp,
-                                    Move::L,
-                                    Move::Lp,
-                                    Move::B,
-                                    Move::Bp,
-                                ];
-                                if move_num >= MOVES.len() {
-                                    // Bad move data. Cube is now desynced.
+                            let mut last_move_count_option = last_move_count_copy.lock().unwrap();
+                            if let Some(last_move_count) = *last_move_count_option {
+                                let move_count =
+                                    current_move_count.wrapping_sub(last_move_count) as usize;
+                                if move_count > 7 {
                                     *synced_copy.lock().unwrap() = false;
                                     *last_move_count_option = None;
-                                    return;
+                                    continue;
                                 }
-                                let mv = MOVES[move_num];
-                                moves.push(TimedMove::new(mv, move_time));
 
-                                // Apply move to the cube state.
-                                state_copy.lock().unwrap().do_move(mv);
-                            }
+                                let mut moves = Vec::with_capacity(move_count);
+                                for j in 0..move_count {
+                                    let i = (move_count - 1) - j;
 
-                            *last_move_count_option = Some(current_move_count);
+                                    let move_num = Self::extract_bits(&value, 12 + i * 5, 5) as usize;
+                                    let move_time = Self::extract_bits(&value, 12 + 7 * 5 + i * 16, 16);
+                                    const MOVES: &[Move] = &[
+                                        Move::U,
+                                        Move::Up,
+                                        Move::R,
+                                        Move::Rp,
+                                        Move::F,
+                                        Move::Fp,
+                                        Move::D,
+                                        Move::Dp,
+                                        Move::L,
+                                        Move::Lp,
+                                        Move::B,
+                                        Move::Bp,
+                                    ];
+                                    if move_num >= MOVES.len() {
+                                        *synced_copy.lock().unwrap() = false;
+                                        *last_move_count_option = None;
+                                        // Can't use `return` from within the loop to break just this iteration
+                                        // so we use a flag approach
+                                        break;
+                                    }
+                                    let mv = MOVES[move_num];
+                                    moves.push(TimedMove::new(mv, move_time));
 
-                            if moves.len() != 0 {
-                                // Let clients know there is a new move
-                                move_listener(BluetoothCubeEvent::Move(
-                                    moves,
-                                    state_copy.lock().unwrap().clone(),
-                                ));
+                                    state_copy.lock().unwrap().do_move(mv);
+                                }
+
+                                // Only notify if we didn't break early due to bad data
+                                if !moves.is_empty() && *synced_copy.lock().unwrap() {
+                                    *last_move_count_option = Some(current_move_count);
+                                    move_listener(BluetoothCubeEvent::Move(
+                                        moves,
+                                        state_copy.lock().unwrap().clone(),
+                                    ));
+                                }
                             }
                         }
+                        Self::CUBE_STATE_MESSAGE => {
+                            *last_move_count_copy.lock().unwrap() =
+                                Some(Self::extract_bits(&value, 4, 8) as u8);
+
+                            let mut corners = [0; 8];
+                            let mut corner_twist = [0; 8];
+                            let mut corners_left: HashSet<u32> =
+                                HashSet::from_iter((&[0, 1, 2, 3, 4, 5, 6, 7]).iter().cloned());
+                            let mut edges = [0; 12];
+                            let mut edge_parity = [0; 12];
+                            let mut edges_left: HashSet<u32> = HashSet::from_iter(
+                                (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]).iter().cloned(),
+                            );
+                            let mut total_corner_twist = 0;
+                            let mut total_edge_parity = 0;
+
+                            let mut valid = true;
+                            for i in 0..7 {
+                                corners[i] = Self::extract_bits(&value, 12 + i * 3, 3);
+                                corner_twist[i] = Self::extract_bits(&value, 33 + i * 2, 2);
+                                total_corner_twist += corner_twist[i];
+                                if !corners_left.remove(&corners[i]) || corner_twist[i] >= 3 {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+
+                            if valid {
+                                for i in 0..11 {
+                                    edges[i] = Self::extract_bits(&value, 47 + i * 4, 4);
+                                    edge_parity[i] = Self::extract_bits(&value, 91 + i, 1);
+                                    total_edge_parity += edge_parity[i];
+                                    if !edges_left.remove(&edges[i]) || edge_parity[i] >= 2 {
+                                        valid = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if valid {
+                                corners[7] = *corners_left.iter().next().unwrap();
+                                edges[11] = *edges_left.iter().next().unwrap();
+                                corner_twist[7] = (3 - total_corner_twist % 3) % 3;
+                                edge_parity[11] = total_edge_parity & 1;
+
+                                let mut corner_pieces = Vec::with_capacity(8);
+                                let mut edge_pieces = Vec::with_capacity(12);
+                                for i in 0..8 {
+                                    corner_pieces.push(CornerPiece {
+                                        piece: Corner::try_from(corners[i] as u8).unwrap(),
+                                        orientation: corner_twist[i] as u8,
+                                    });
+                                }
+                                for i in 0..12 {
+                                    edge_pieces.push(EdgePiece3x3x3 {
+                                        piece: Edge3x3x3::try_from(edges[i] as u8).unwrap(),
+                                        orientation: edge_parity[i] as u8,
+                                    });
+                                }
+
+                                let cube = Cube3x3x3::from_corners_and_edges(
+                                    corner_pieces.try_into().unwrap(),
+                                    edge_pieces.try_into().unwrap(),
+                                );
+
+                                *state_copy.lock().unwrap() = cube;
+                                *state_set_copy.lock().unwrap() = true;
+                            }
+                        }
+                        Self::BATTERY_STATE_MESSAGE => {
+                            *battery_charging_copy.lock().unwrap() =
+                                Some(Self::extract_bits(&value, 4, 4) != 0);
+                            *battery_percentage_copy.lock().unwrap() =
+                                Some(Self::extract_bits(&value, 8, 8));
+                        }
+                        _ => (),
                     }
-                    Self::CUBE_STATE_MESSAGE => {
-                        *last_move_count.lock().unwrap() =
-                            Some(Self::extract_bits(&value, 4, 8) as u8);
-
-                        // Set up corner and edge state
-                        let mut corners = [0; 8];
-                        let mut corner_twist = [0; 8];
-                        let mut corners_left: HashSet<u32> =
-                            HashSet::from_iter((&[0, 1, 2, 3, 4, 5, 6, 7]).iter().cloned());
-                        let mut edges = [0; 12];
-                        let mut edge_parity = [0; 12];
-                        let mut edges_left: HashSet<u32> = HashSet::from_iter(
-                            (&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]).iter().cloned(),
-                        );
-                        let mut total_corner_twist = 0;
-                        let mut total_edge_parity = 0;
-
-                        // Decode corners. There are only 7 in the packet because the
-                        // last one is implicit (the one missing).
-                        for i in 0..7 {
-                            corners[i] = Self::extract_bits(&value, 12 + i * 3, 3);
-                            corner_twist[i] = Self::extract_bits(&value, 33 + i * 2, 2);
-                            total_corner_twist += corner_twist[i];
-                            if !corners_left.remove(&corners[i]) || corner_twist[i] >= 3 {
-                                return;
-                            }
-                        }
-
-                        // Decode edges. There are only 11 in the packet because the
-                        // last one is implicit (the one missing).
-                        for i in 0..11 {
-                            edges[i] = Self::extract_bits(&value, 47 + i * 4, 4);
-                            edge_parity[i] = Self::extract_bits(&value, 91 + i, 1);
-                            total_edge_parity += edge_parity[i];
-                            if !edges_left.remove(&edges[i]) || edge_parity[i] >= 2 {
-                                return;
-                            }
-                        }
-
-                        // Add in the missing corner and edge based on the last one
-                        // left. There will always be exactly one left since we
-                        // already verified each corner and edge was unique.
-                        corners[7] = *corners_left.iter().next().unwrap();
-                        edges[11] = *edges_left.iter().next().unwrap();
-
-                        // Compute the corner twist and edge parity of the last corner
-                        // and edge piece. The corner twist must be a multiple of 3 and
-                        // the edge parity must be even.
-                        corner_twist[7] = (3 - total_corner_twist % 3) % 3;
-                        edge_parity[11] = total_edge_parity & 1;
-
-                        // Create cube state. Our representation of the cube state matches
-                        // the one used in the packet. We have already verified the data
-                        // is valid so we can unwrap the conversions with panic.
-                        let mut corner_pieces = Vec::with_capacity(8);
-                        let mut edge_pieces = Vec::with_capacity(12);
-                        for i in 0..8 {
-                            corner_pieces.push(CornerPiece {
-                                piece: Corner::try_from(corners[i] as u8).unwrap(),
-                                orientation: corner_twist[i] as u8,
-                            });
-                        }
-                        for i in 0..12 {
-                            edge_pieces.push(EdgePiece3x3x3 {
-                                piece: Edge3x3x3::try_from(edges[i] as u8).unwrap(),
-                                orientation: edge_parity[i] as u8,
-                            });
-                        }
-
-                        let cube = Cube3x3x3::from_corners_and_edges(
-                            corner_pieces.try_into().unwrap(),
-                            edge_pieces.try_into().unwrap(),
-                        );
-
-                        *state_copy.lock().unwrap() = cube;
-                        *state_set_copy.lock().unwrap() = true;
-                    }
-                    Self::BATTERY_STATE_MESSAGE => {
-                        *battery_charging_copy.lock().unwrap() =
-                            Some(Self::extract_bits(&value, 4, 4) != 0);
-                        *battery_percentage_copy.lock().unwrap() =
-                            Some(Self::extract_bits(&value, 8, 8));
-                    }
-                    _ => (),
                 }
             }
-        }));
-        device.subscribe(&read)?;
+        });
 
         // Request initial cube state
         let mut loop_count = 0;
@@ -595,9 +586,9 @@ impl<P: Peripheral> GANCubeVersion2<P> {
             let mut message: [u8; 20] = [0; 20];
             message[0] = Self::CUBE_STATE_MESSAGE;
             let message = cipher.encrypt(&message)?;
-            device.write(&write, &message, WriteType::WithResponse)?;
+            device.write(&write, &message, WriteType::WithResponse).await?;
 
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
 
             if *state_set.lock().unwrap() {
                 break;
@@ -613,7 +604,7 @@ impl<P: Peripheral> GANCubeVersion2<P> {
         let mut message: [u8; 20] = [0; 20];
         message[0] = Self::BATTERY_STATE_MESSAGE;
         let message = cipher.encrypt(&message)?;
-        device.write(&write, &message, WriteType::WithResponse)?;
+        device.write(&write, &message, WriteType::WithResponse).await?;
 
         Ok(Self {
             device,
@@ -689,8 +680,8 @@ impl GANCubeVersion2Cipher {
             value[i] = cipher[i];
         }
 
-        // Decrypt the last 16 bytes of the packet in place. This will overlap
-        // with the decrypted block above.
+        // Encrypt the last 16 bytes of the packet in place. This will overlap
+        // with the encrypted block above.
         let offset = value.len() - 16;
         for i in 0..16 {
             value[offset + i] ^= self.device_iv[i];
@@ -705,7 +696,7 @@ impl GANCubeVersion2Cipher {
     }
 }
 
-impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion2<P> {
+impl BluetoothCubeDevice for GANCubeVersion2 {
     fn cube_state(&self) -> Cube3x3x3 {
         self.state.lock().unwrap().clone()
     }
@@ -743,9 +734,11 @@ impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion2<P> {
             0x00,
         ];
         let message = self.cipher.encrypt(&message).unwrap();
-        let _ = self
-            .device
-            .write(&self.write, &message, WriteType::WithResponse);
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(
+            self.device
+                .write(&self.write, &message, WriteType::WithResponse),
+        );
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }
@@ -755,44 +748,49 @@ impl<P: Peripheral> BluetoothCubeDevice for GANCubeVersion2<P> {
     }
 
     fn disconnect(&self) {
-        let _ = self.device.disconnect();
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.disconnect());
     }
 }
 
-impl<P: Peripheral> GANSmartTimer<P> {
-    pub fn new(
-        device: P,
+impl GANSmartTimer {
+    pub async fn new(
+        device: Peripheral,
         updates: Characteristic,
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
     ) -> Result<Self> {
-        device.on_notification(Box::new(move |value| {
-            if value.value.len() >= 4 {
-                match value.value[3] {
-                    1 => move_listener(BluetoothCubeEvent::TimerReady),
-                    2 => move_listener(BluetoothCubeEvent::TimerStartCancel),
-                    3 => move_listener(BluetoothCubeEvent::TimerStarted),
-                    4 => {
-                        if value.value.len() >= 8 {
-                            let min = value.value[4] as u32;
-                            let sec = value.value[5] as u32;
-                            let msec = ((value.value[7] as u32) << 8) | (value.value[6] as u32);
-                            move_listener(BluetoothCubeEvent::TimerFinished(
-                                min * 60000 + sec * 1000 + msec,
-                            ));
+        device.subscribe(&updates).await?;
+        let mut notification_stream = device.notifications().await?;
+
+        tokio::spawn(async move {
+            while let Some(value) = notification_stream.next().await {
+                if value.value.len() >= 4 {
+                    match value.value[3] {
+                        1 => move_listener(BluetoothCubeEvent::TimerReady),
+                        2 => move_listener(BluetoothCubeEvent::TimerStartCancel),
+                        3 => move_listener(BluetoothCubeEvent::TimerStarted),
+                        4 => {
+                            if value.value.len() >= 8 {
+                                let min = value.value[4] as u32;
+                                let sec = value.value[5] as u32;
+                                let msec = ((value.value[7] as u32) << 8) | (value.value[6] as u32);
+                                move_listener(BluetoothCubeEvent::TimerFinished(
+                                    min * 60000 + sec * 1000 + msec,
+                                ));
+                            }
                         }
+                        6 => move_listener(BluetoothCubeEvent::HandsOnTimer),
+                        _ => (),
                     }
-                    6 => move_listener(BluetoothCubeEvent::HandsOnTimer),
-                    _ => (),
                 }
             }
-        }));
-        device.subscribe(&updates)?;
+        });
 
         Ok(GANSmartTimer { device })
     }
 }
 
-impl<P: Peripheral> BluetoothCubeDevice for GANSmartTimer<P> {
+impl BluetoothCubeDevice for GANSmartTimer {
     fn timer_only(&self) -> bool {
         true
     }
@@ -817,15 +815,16 @@ impl<P: Peripheral> BluetoothCubeDevice for GANSmartTimer<P> {
     }
 
     fn disconnect(&self) {
-        let _ = self.device.disconnect();
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.disconnect());
     }
 }
 
-pub(crate) fn gan_cube_connect<P: Peripheral + 'static>(
-    device: P,
+pub(crate) async fn gan_cube_connect(
+    device: Peripheral,
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    let characteristics = device.discover_characteristics()?;
+    let characteristics = device.characteristics();
 
     // Find characteristics for communicating with the cube. There are two different
     // versions of the GAN cubes with different characteristics.
@@ -889,25 +888,20 @@ pub(crate) fn gan_cube_connect<P: Peripheral + 'static>(
         };
 
         // Detect cube version
-        let version = device.read(&characteristics.version)?;
+        let version = device.read(&characteristics.version).await?;
         if version.len() < 3 {
             return Err(anyhow!("Device version invalid"));
         }
         let major = version[0];
         let minor = version[1];
         if major == 1 && minor <= 1 {
-            Ok(Box::new(GANCubeVersion1::new(
-                device,
-                characteristics,
-                move_listener,
-                minor,
-            )?))
+            Ok(Box::new(
+                GANCubeVersion1::new(device, characteristics, move_listener, minor).await?,
+            ))
         } else if major == 2 && minor == 0 {
-            Ok(Box::new(GANSmartTimer::new(
-                device,
-                characteristics.last_moves,
-                move_listener,
-            )?))
+            Ok(Box::new(
+                GANSmartTimer::new(device, characteristics.last_moves, move_listener).await?,
+            ))
         } else {
             Err(anyhow!(
                 "GAN cube version {}.{} not supported",
@@ -916,12 +910,9 @@ pub(crate) fn gan_cube_connect<P: Peripheral + 'static>(
             ))
         }
     } else if v2_read.is_some() && v2_write.is_some() {
-        Ok(Box::new(GANCubeVersion2::new(
-            device,
-            v2_read.unwrap(),
-            v2_write.unwrap(),
-            move_listener,
-        )?))
+        Ok(Box::new(
+            GANCubeVersion2::new(device, v2_read.unwrap(), v2_write.unwrap(), move_listener).await?,
+        ))
     } else {
         Err(anyhow!("Unrecognized GAN cube version"))
     }

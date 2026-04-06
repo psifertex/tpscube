@@ -211,7 +211,7 @@ impl ImportedSession {
                 continue;
             }
 
-            let session_id = Uuid::new_v4().to_simple().to_string();
+            let session_id = Uuid::new_v4().simple().to_string();
 
             // Look up session options. The key for the session options is the number after "session".
             // More inconsistency but it is what it is.
@@ -400,7 +400,7 @@ impl ImportedSession {
 
         // Parse all solves
         let mut solves = Vec::new();
-        let session_id = Uuid::new_v4().to_simple().to_string();
+        let session_id = Uuid::new_v4().simple().to_string();
         for solve in reader.records() {
             let solve = solve?;
 

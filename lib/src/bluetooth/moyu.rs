@@ -2,18 +2,20 @@ use crate::bluetooth::{BluetoothCubeDevice, BluetoothCubeEvent};
 use crate::common::{Cube, CubeFace, InitialCubeState, Move, TimedMove};
 use crate::cube3x3x3::Cube3x3x3;
 use anyhow::{anyhow, Result};
-use btleplug::api::{Characteristic, Peripheral};
+use btleplug::api::{Characteristic, Peripheral as _};
+use btleplug::platform::Peripheral;
+use futures::StreamExt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-struct MoYuCube<P: Peripheral + 'static> {
-    device: P,
+struct MoYuCube {
+    device: Peripheral,
     state: Arc<Mutex<Cube3x3x3>>,
     synced: Arc<Mutex<bool>>,
 }
 
-impl<P: Peripheral + 'static> MoYuCube<P> {
+impl MoYuCube {
     const FACES: [CubeFace; 6] = [
         CubeFace::Bottom,
         CubeFace::Left,
@@ -23,8 +25,8 @@ impl<P: Peripheral + 'static> MoYuCube<P> {
         CubeFace::Top,
     ];
 
-    pub fn new(
-        device: P,
+    pub async fn new(
+        device: Peripheral,
         turn: Characteristic,
         gyro: Characteristic,
         read: Characteristic,
@@ -35,71 +37,84 @@ impl<P: Peripheral + 'static> MoYuCube<P> {
 
         let state_copy = state.clone();
         let synced_copy = synced.clone();
-        let mut last_move_time = None;
         let turn_uuid = turn.uuid.clone();
-        let mut face_rotations: [i8; 6] = [0, 0, 0, 0, 0, 0];
 
-        device.on_notification(Box::new(move |value| {
-            if value.uuid == turn_uuid {
-                // Get count of turn reports and check lengths
-                if value.value.len() < 1 {
-                    *synced_copy.lock().unwrap() = false;
-                    return;
-                }
-                let count = value.value[0];
-                if value.value.len() < 1 + count as usize * 6 {
-                    *synced_copy.lock().unwrap() = false;
-                    return;
-                }
+        // Subscribe to all characteristics
+        device.subscribe(&turn).await?;
+        device.subscribe(&gyro).await?;
+        device.subscribe(&read).await?;
 
-                // Parse each turn report
-                for i in 0..count {
-                    let offset = 1 + i as usize * 6;
-                    let turn = &value.value[offset..offset + 6];
-                    let timestamp = (((turn[1] as u32) << 24)
-                        | ((turn[0] as u32) << 16)
-                        | ((turn[3] as u32) << 8)
-                        | (turn[2] as u32)) as f64
-                        / 65536.0;
-                    let face = turn[4];
-                    let direction = turn[5] as i8 / 36;
+        let mut notification_stream = device.notifications().await?;
 
-                    // Decode face rotation into moves
-                    let old_rotation = face_rotations[face as usize];
-                    let new_rotation = old_rotation + direction;
-                    face_rotations[face as usize] = (new_rotation + 9) % 9;
-                    let mv = if old_rotation >= 5 && new_rotation <= 4 {
-                        Some(Move::from_face_and_rotation(Self::FACES[face as usize], -1).unwrap())
-                    } else if old_rotation <= 4 && new_rotation >= 5 {
-                        Some(Move::from_face_and_rotation(Self::FACES[face as usize], 1).unwrap())
-                    } else {
-                        None
-                    };
+        tokio::spawn(async move {
+            let mut last_move_time: Option<f64> = None;
+            let mut face_rotations: [i8; 6] = [0, 0, 0, 0, 0, 0];
 
-                    if let Some(mv) = mv {
-                        // There was a move, get time since last move
-                        let prev_move_time = if let Some(time) = last_move_time {
-                            time
+            while let Some(value) = notification_stream.next().await {
+                if value.uuid == turn_uuid {
+                    // Get count of turn reports and check lengths
+                    if value.value.len() < 1 {
+                        *synced_copy.lock().unwrap() = false;
+                        continue;
+                    }
+                    let count = value.value[0];
+                    if value.value.len() < 1 + count as usize * 6 {
+                        *synced_copy.lock().unwrap() = false;
+                        continue;
+                    }
+
+                    // Parse each turn report
+                    for i in 0..count {
+                        let offset = 1 + i as usize * 6;
+                        let turn = &value.value[offset..offset + 6];
+                        let timestamp = (((turn[1] as u32) << 24)
+                            | ((turn[0] as u32) << 16)
+                            | ((turn[3] as u32) << 8)
+                            | (turn[2] as u32)) as f64
+                            / 65536.0;
+                        let face = turn[4];
+                        let direction = turn[5] as i8 / 36;
+
+                        // Decode face rotation into moves
+                        let old_rotation = face_rotations[face as usize];
+                        let new_rotation = old_rotation + direction;
+                        face_rotations[face as usize] = (new_rotation + 9) % 9;
+                        let mv = if old_rotation >= 5 && new_rotation <= 4 {
+                            Some(
+                                Move::from_face_and_rotation(Self::FACES[face as usize], -1)
+                                    .unwrap(),
+                            )
+                        } else if old_rotation <= 4 && new_rotation >= 5 {
+                            Some(
+                                Move::from_face_and_rotation(Self::FACES[face as usize], 1).unwrap(),
+                            )
                         } else {
-                            timestamp
+                            None
                         };
-                        let time_passed = timestamp - prev_move_time;
-                        let time_passed_ms = (time_passed * 1000.0) as u32;
-                        last_move_time = Some(prev_move_time + time_passed_ms as f64 / 1000.0);
 
-                        // Report the new move
-                        state_copy.lock().unwrap().do_move(mv);
-                        move_listener(BluetoothCubeEvent::Move(
-                            vec![TimedMove::new(mv, time_passed_ms)],
-                            state_copy.lock().unwrap().clone(),
-                        ));
+                        if let Some(mv) = mv {
+                            // There was a move, get time since last move
+                            let prev_move_time = if let Some(time) = last_move_time {
+                                time
+                            } else {
+                                timestamp
+                            };
+                            let time_passed = timestamp - prev_move_time;
+                            let time_passed_ms = (time_passed * 1000.0) as u32;
+                            last_move_time =
+                                Some(prev_move_time + time_passed_ms as f64 / 1000.0);
+
+                            // Report the new move
+                            state_copy.lock().unwrap().do_move(mv);
+                            move_listener(BluetoothCubeEvent::Move(
+                                vec![TimedMove::new(mv, time_passed_ms)],
+                                state_copy.lock().unwrap().clone(),
+                            ));
+                        }
                     }
                 }
             }
-        }));
-        device.subscribe(&turn)?;
-        device.subscribe(&gyro)?;
-        device.subscribe(&read)?;
+        });
 
         // We can't request state because the Bluetooth library is incompatible with
         // making writes to this device.
@@ -112,7 +127,7 @@ impl<P: Peripheral + 'static> MoYuCube<P> {
     }
 }
 
-impl<P: Peripheral> BluetoothCubeDevice for MoYuCube<P> {
+impl BluetoothCubeDevice for MoYuCube {
     fn cube_state(&self) -> Cube3x3x3 {
         self.state.lock().unwrap().clone()
     }
@@ -134,15 +149,16 @@ impl<P: Peripheral> BluetoothCubeDevice for MoYuCube<P> {
     }
 
     fn disconnect(&self) {
-        let _ = self.device.disconnect();
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.disconnect());
     }
 }
 
-pub(crate) fn moyu_connect<P: Peripheral + 'static>(
-    device: P,
+pub(crate) async fn moyu_connect(
+    device: Peripheral,
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    let characteristics = device.discover_characteristics()?;
+    let characteristics = device.characteristics();
 
     let mut turn = None;
     let mut gyro = None;
@@ -161,13 +177,16 @@ pub(crate) fn moyu_connect<P: Peripheral + 'static>(
         }
     }
     if turn.is_some() && gyro.is_some() && read.is_some() {
-        Ok(Box::new(MoYuCube::new(
-            device,
-            turn.unwrap(),
-            gyro.unwrap(),
-            read.unwrap(),
-            move_listener,
-        )?))
+        Ok(Box::new(
+            MoYuCube::new(
+                device,
+                turn.unwrap(),
+                gyro.unwrap(),
+                read.unwrap(),
+                move_listener,
+            )
+            .await?,
+        ))
     } else {
         Err(anyhow!("Unrecognized MoYu cube version"))
     }

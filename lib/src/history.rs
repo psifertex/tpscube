@@ -179,7 +179,7 @@ impl History {
         let current_session = match storage.get("session").await? {
             Some(session) => String::from_utf8_lossy(&session).into_owned(),
             None => {
-                let session = Uuid::new_v4().to_simple().to_string();
+                let session = Uuid::new_v4().simple().to_string();
                 storage.put("session", session.as_bytes()).await?;
                 session
             }
@@ -318,7 +318,7 @@ impl History {
     }
 
     pub fn new_session(&mut self) -> String {
-        let session = Uuid::new_v4().to_simple().to_string();
+        let session = Uuid::new_v4().simple().to_string();
         self.current_session = session.clone();
         self.storage.put("session", session.as_bytes());
         self.update_id = self.next_update_id;
@@ -688,7 +688,7 @@ impl History {
                     if gap.num_seconds() > max_gap_time {
                         // Found a gap larger than the timeout, create a new session
                         // for this solve and solves after it.
-                        let session_id = Uuid::new_v4().to_simple().to_string();
+                        let session_id = Uuid::new_v4().simple().to_string();
                         new_session = Some(session_id);
                         new_session_count += 1;
                     }

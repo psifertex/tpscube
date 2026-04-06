@@ -2,21 +2,23 @@ use crate::bluetooth::{BluetoothCubeDevice, BluetoothCubeEvent};
 use crate::common::{Color, Cube, CubeFace, InitialCubeState, Move, TimedMove};
 use crate::cube3x3x3::{Cube3x3x3, Cube3x3x3Faces};
 use anyhow::{anyhow, Result};
-use btleplug::api::{Characteristic, Peripheral, WriteType};
+use btleplug::api::{Characteristic, Peripheral as _, WriteType};
+use btleplug::platform::Peripheral;
+use futures::StreamExt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-struct GoCube<P: Peripheral + 'static> {
-    device: P,
+struct GoCube {
+    device: Peripheral,
     state: Arc<Mutex<Cube3x3x3>>,
     battery_percentage: Arc<Mutex<Option<u32>>>,
     synced: Arc<Mutex<bool>>,
     write: Characteristic,
 }
 
-impl<P: Peripheral + 'static> GoCube<P> {
+impl GoCube {
     const ROTATE_MESSAGE: u8 = 0x01;
     const STATE_MESSAGE: u8 = 0x02;
     const BATTERY_MESSAGE: u8 = 0x05;
@@ -28,8 +30,8 @@ impl<P: Peripheral + 'static> GoCube<P> {
 
     const CUBE_STATE_TIMEOUT_MS: usize = 2000;
 
-    pub fn new(
-        device: P,
+    pub async fn new(
+        device: Peripheral,
         read: Characteristic,
         write: Characteristic,
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
@@ -43,109 +45,125 @@ impl<P: Peripheral + 'static> GoCube<P> {
         let state_set_copy = state_set.clone();
         let battery_percentage_copy = battery_percentage.clone();
         let synced_copy = synced.clone();
-        let start_time = Mutex::new(Instant::now());
-        let last_move_time = Mutex::new(0);
+        let start_time = Instant::now();
 
-        device.on_notification(Box::new(move |value| {
-            if value.value.len() < 4 {
-                *synced_copy.lock().unwrap() = false;
-                return;
-            }
-            if value.value.len() < value.value[1] as usize {
-                *synced_copy.lock().unwrap() = false;
-                return;
-            }
-            if value.value[1] < 4 {
-                *synced_copy.lock().unwrap() = false;
-                return;
-            }
+        // Subscribe and spawn notification handler
+        device.subscribe(&read).await?;
+        let mut notification_stream = device.notifications().await?;
 
-            match value.value[2] {
-                Self::ROTATE_MESSAGE => {
-                    let count = (value.value[1] as usize - 4) / 2;
-                    let mut moves = Vec::new();
-                    for i in 0..count {
-                        let move_idx = value.value[3 + i * 2] as usize;
-                        let mv = match move_idx {
-                            0 => Move::B,
-                            1 => Move::Bp,
-                            2 => Move::F,
-                            3 => Move::Fp,
-                            4 => Move::U,
-                            5 => Move::Up,
-                            6 => Move::D,
-                            7 => Move::Dp,
-                            8 => Move::R,
-                            9 => Move::Rp,
-                            0xa => Move::L,
-                            0xb => Move::Lp,
-                            _ => {
-                                *synced_copy.lock().unwrap() = false;
-                                return;
-                            }
-                        };
+        tokio::spawn(async move {
+            let start_time = Mutex::new(start_time);
+            let last_move_time = Mutex::new(0);
 
-                        // Apply move to the cube state.
-                        state_copy.lock().unwrap().do_move(mv);
-
-                        moves.push(mv);
-                    }
-
-                    // Get time since last move. Keep computation relative to start time so
-                    // that rounding errors don't cause errors in the total time.
-                    let current_time = (Instant::now() - *start_time.lock().unwrap()).as_millis();
-                    let move_time = (current_time - *last_move_time.lock().unwrap()) as u32;
-                    *last_move_time.lock().unwrap() = current_time;
-
-                    let mut timed_moves = Vec::new();
-                    for (idx, mv) in moves.iter().enumerate() {
-                        timed_moves.push(TimedMove::new(*mv, if idx == 0 { move_time } else { 0 }));
-                    }
-
-                    // Let clients know there is a new move
-                    move_listener(BluetoothCubeEvent::Move(
-                        timed_moves,
-                        state_copy.lock().unwrap().clone(),
-                    ));
+            while let Some(value) = notification_stream.next().await {
+                if value.value.len() < 4 {
+                    *synced_copy.lock().unwrap() = false;
+                    continue;
                 }
-                Self::STATE_MESSAGE => {
-                    if value.value.len() < 64 {
-                        *synced_copy.lock().unwrap() = false;
-                        return;
-                    }
+                if value.value.len() < value.value[1] as usize {
+                    *synced_copy.lock().unwrap() = false;
+                    continue;
+                }
+                if value.value[1] < 4 {
+                    *synced_copy.lock().unwrap() = false;
+                    continue;
+                }
 
-                    if let Ok(state) = Self::decode_cube_state(&value.value) {
-                        *state_copy.lock().unwrap() = state;
-                        *state_set_copy.lock().unwrap() = true;
-                    } else {
-                        *synced_copy.lock().unwrap() = false;
+                match value.value[2] {
+                    0x01 /* ROTATE_MESSAGE */ => {
+                        let count = (value.value[1] as usize - 4) / 2;
+                        let mut moves = Vec::new();
+                        let mut bad_move = false;
+                        for i in 0..count {
+                            let move_idx = value.value[3 + i * 2] as usize;
+                            let mv = match move_idx {
+                                0 => Move::B,
+                                1 => Move::Bp,
+                                2 => Move::F,
+                                3 => Move::Fp,
+                                4 => Move::U,
+                                5 => Move::Up,
+                                6 => Move::D,
+                                7 => Move::Dp,
+                                8 => Move::R,
+                                9 => Move::Rp,
+                                0xa => Move::L,
+                                0xb => Move::Lp,
+                                _ => {
+                                    *synced_copy.lock().unwrap() = false;
+                                    bad_move = true;
+                                    break;
+                                }
+                            };
+
+                            // Apply move to the cube state.
+                            state_copy.lock().unwrap().do_move(mv);
+
+                            moves.push(mv);
+                        }
+
+                        if bad_move {
+                            continue;
+                        }
+
+                        // Get time since last move
+                        let current_time = (Instant::now() - *start_time.lock().unwrap()).as_millis();
+                        let move_time = (current_time - *last_move_time.lock().unwrap()) as u32;
+                        *last_move_time.lock().unwrap() = current_time;
+
+                        let mut timed_moves = Vec::new();
+                        for (idx, mv) in moves.iter().enumerate() {
+                            timed_moves.push(TimedMove::new(*mv, if idx == 0 { move_time } else { 0 }));
+                        }
+
+                        // Let clients know there is a new move
+                        move_listener(BluetoothCubeEvent::Move(
+                            timed_moves,
+                            state_copy.lock().unwrap().clone(),
+                        ));
                     }
+                    0x02 /* STATE_MESSAGE */ => {
+                        if value.value.len() < 64 {
+                            *synced_copy.lock().unwrap() = false;
+                            continue;
+                        }
+
+                        if let Ok(cube_state) = Self::decode_cube_state(&value.value) {
+                            *state_copy.lock().unwrap() = cube_state;
+                            *state_set_copy.lock().unwrap() = true;
+                        } else {
+                            *synced_copy.lock().unwrap() = false;
+                        }
+                    }
+                    0x05 /* BATTERY_MESSAGE */ => {
+                        *battery_percentage_copy.lock().unwrap() = Some(value.value[3] as u32);
+                    }
+                    _ => (),
                 }
-                Self::BATTERY_MESSAGE => {
-                    *battery_percentage_copy.lock().unwrap() = Some(value.value[3] as u32);
-                }
-                _ => (),
             }
-        }));
-        device.subscribe(&read)?;
+        });
 
         // Turn off orientation messages
-        device.write(
-            &write,
-            &[Self::DISABLE_ORIENTATION_MESSAGE],
-            WriteType::WithResponse,
-        )?;
+        device
+            .write(
+                &write,
+                &[Self::DISABLE_ORIENTATION_MESSAGE],
+                WriteType::WithResponse,
+            )
+            .await?;
 
         // Request initial cube state
         let mut loop_count = 0;
         loop {
-            device.write(
-                &write,
-                &[Self::REQUEST_STATE_MESSAGE],
-                WriteType::WithResponse,
-            )?;
+            device
+                .write(
+                    &write,
+                    &[Self::REQUEST_STATE_MESSAGE],
+                    WriteType::WithResponse,
+                )
+                .await?;
 
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
 
             if *state_set.lock().unwrap() {
                 break;
@@ -158,11 +176,13 @@ impl<P: Peripheral + 'static> GoCube<P> {
         }
 
         // Request battery state
-        device.write(
-            &write,
-            &[Self::REQUEST_BATTERY_MESSAGE],
-            WriteType::WithResponse,
-        )?;
+        device
+            .write(
+                &write,
+                &[Self::REQUEST_BATTERY_MESSAGE],
+                WriteType::WithResponse,
+            )
+            .await?;
 
         Ok(Self {
             device,
@@ -225,7 +245,7 @@ impl<P: Peripheral + 'static> GoCube<P> {
     }
 }
 
-impl<P: Peripheral> BluetoothCubeDevice for GoCube<P> {
+impl BluetoothCubeDevice for GoCube {
     fn cube_state(&self) -> Cube3x3x3 {
         self.state.lock().unwrap().clone()
     }
@@ -240,11 +260,12 @@ impl<P: Peripheral> BluetoothCubeDevice for GoCube<P> {
     }
 
     fn reset_cube_state(&self) {
-        let _ = self.device.write(
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.write(
             &self.write,
             &[Self::RESET_STATE_MESSAGE],
             WriteType::WithResponse,
-        );
+        ));
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }
@@ -254,15 +275,16 @@ impl<P: Peripheral> BluetoothCubeDevice for GoCube<P> {
     }
 
     fn disconnect(&self) {
-        let _ = self.device.disconnect();
+        let handle = tokio::runtime::Handle::current();
+        let _ = handle.block_on(self.device.disconnect());
     }
 }
 
-pub(crate) fn gocube_connect<P: Peripheral + 'static>(
-    device: P,
+pub(crate) async fn gocube_connect(
+    device: Peripheral,
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    let characteristics = device.discover_characteristics()?;
+    let characteristics = device.characteristics();
 
     let mut write = None;
     let mut read = None;
@@ -276,12 +298,9 @@ pub(crate) fn gocube_connect<P: Peripheral + 'static>(
         }
     }
     if read.is_some() && write.is_some() {
-        Ok(Box::new(GoCube::new(
-            device,
-            read.unwrap(),
-            write.unwrap(),
-            move_listener,
-        )?))
+        Ok(Box::new(
+            GoCube::new(device, read.unwrap(), write.unwrap(), move_listener).await?,
+        ))
     } else {
         Err(anyhow!("Unrecognized GoCube version"))
     }

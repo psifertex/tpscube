@@ -13,7 +13,7 @@ rand = "0.8"
 chrono = "0.4"
 flatbuffers = "2.0"
 anyhow = "1.0"
-uuid = { version="0.8", features=["v4"] }
+uuid = { version="1", features=["v4"] }
 dirs = "3.0"
 serde = { version="1.0", features=["derive"] }
 serde_json = "1.0"
@@ -30,7 +30,8 @@ wasm-bindgen-futures = "0.4"
 rocksdb = { version="0.20", optional=true }
 reqwest = { version="0.11", features=["rustls-tls", "blocking", "json"], optional=true }
 http = { version="0.2", optional=true }
-btleplug = { git="https://github.com/D0ntPanic/btleplug", optional=true }
+btleplug = { version="0.11", optional=true }
+futures = { version="0.3", optional=true }
 aes = { version="0.7", optional=true }
 tokio = { version="1.7", features=["full"] }
 
@@ -39,5 +40,5 @@ default = []
 no_solver = []
 storage = []
 native-storage = ["storage", "rocksdb", "reqwest", "http"]
-web-storage = ["storage", "js-sys", "web-sys", "uuid/wasm-bindgen", "chrono/wasmbind"]
-bluetooth = ["btleplug", "aes"]
+web-storage = ["storage", "js-sys", "web-sys", "uuid/js", "chrono/wasmbind"]
+bluetooth = ["btleplug", "aes", "futures"]

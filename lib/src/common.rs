@@ -181,7 +181,7 @@ pub struct Solve {
 
 impl Solve {
     pub fn new_id() -> String {
-        Uuid::new_v4().to_simple().to_string()
+        Uuid::new_v4().simple().to_string()
     }
 
     pub fn final_time(&self) -> Option<u32> {
