@@ -5,27 +5,27 @@ use gl_matrix::{
     mat3, mat4,
 };
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 use anyhow::anyhow;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 use js_sys::WebAssembly;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 use wasm_bindgen::JsCast;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 use web_sys::{HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext, WebGlShader};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 pub struct GlContext<'a, 'b> {
     pub canvas: &'a HtmlCanvasElement,
     pub ctxt: &'b WebGlRenderingContext,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "wgpu-backend")]
 pub struct GlContext<'a> {
     pub draw_commands: &'a mut Vec<CubeDrawCommand>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "wgpu-backend")]
 pub struct CubeDrawCommand {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
@@ -41,7 +41,7 @@ pub struct CubeDrawCommand {
 //   vec3f    light_pos         offset 192  (12 bytes + 4 pad)
 //   vec3f    light_color       offset 208  (12 bytes + 4 pad)
 // Total: 224 bytes
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "wgpu-backend")]
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CubeUniforms {
@@ -69,22 +69,22 @@ pub struct Vertex {
 }
 
 pub struct GlRenderer {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     program: WebGlProgram,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     index_buffer: WebGlBuffer,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     pos_buffer: WebGlBuffer,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     normal_buffer: WebGlBuffer,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     color_buffer: WebGlBuffer,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     roughness_buffer: WebGlBuffer,
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     viewport: [f32; 4], // x, y, width, height in pixels
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     view_proj: Mat4,
 
     camera_pos: Vec3,
@@ -96,7 +96,7 @@ pub struct GlRenderer {
 }
 
 impl GlRenderer {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     pub fn new(gl: &GlContext<'_, '_>) -> Result<Self> {
         let shader = ShaderPrograms::default();
         let vertex_shader = compile_shader(
@@ -156,7 +156,7 @@ impl GlRenderer {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     pub fn new(_gl: &GlContext<'_>) -> Result<Self> {
         let mut view: Mat4 = [0.0; 16];
         let mut model: Mat4 = [0.0; 16];
@@ -212,7 +212,7 @@ impl GlRenderer {
         result
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     pub fn begin(&mut self, ctxt: &egui::Context, gl: &mut GlContext<'_, '_>, rect: &Rect) {
         gl.ctxt.disable(WebGlRenderingContext::SCISSOR_TEST);
         gl.ctxt.enable(WebGlRenderingContext::CULL_FACE);
@@ -261,7 +261,7 @@ impl GlRenderer {
         gl.ctxt.clear_depth(1.0);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     pub fn begin(&mut self, _ctxt: &egui::Context, _gl: &mut GlContext<'_>, rect: &Rect) {
         // Store viewport in logical points; pixel conversion happens at paint time
         // using PaintCallbackInfo which has the correct DPI at render time.
@@ -271,7 +271,7 @@ impl GlRenderer {
         mat4::multiply(&mut self.view_proj, &proj, &self.view);
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     pub fn draw(
         &mut self,
         gl: &mut GlContext<'_, '_>,
@@ -447,7 +447,7 @@ impl GlRenderer {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     pub fn draw(
         &mut self,
         gl: &mut GlContext<'_>,
@@ -494,24 +494,24 @@ impl GlRenderer {
         Ok(())
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "wgpu-backend"))]
     pub fn end(&mut self, gl: &mut GlContext<'_, '_>) {
         gl.ctxt
             .viewport(0, 0, gl.canvas.width() as i32, gl.canvas.height() as i32);
         gl.ctxt.disable(WebGlRenderingContext::DEPTH_TEST);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "wgpu-backend")]
     pub fn end(&mut self, _gl: &mut GlContext<'_>) {}
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 struct ShaderPrograms {
     vertex_100_es: &'static str,
     fragment_100_es: &'static str,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 impl ShaderPrograms {
     fn default() -> Self {
         ShaderPrograms {
@@ -521,7 +521,7 @@ impl ShaderPrograms {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 pub(crate) fn compile_shader(
     gl: &WebGlRenderingContext,
     shader_type: u32,
@@ -546,7 +546,7 @@ pub(crate) fn compile_shader(
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "wgpu-backend"))]
 pub(crate) fn link_program<'a, T: IntoIterator<Item = &'a WebGlShader>>(
     gl: &WebGlRenderingContext,
     shaders: T,

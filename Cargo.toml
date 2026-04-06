@@ -8,6 +8,9 @@ edition = "2021"
 name = "tpscube"
 path = "src/main.rs"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 egui = "0.31"
 eframe = { version = "0.31", default-features = false, features = ["wgpu"], optional = true }
@@ -28,7 +31,7 @@ env_logger = "0.10"
 
 [features]
 default = ["tpscube_core/native-storage", "tpscube_core/bluetooth", "wgpu-backend"]
-wasm = ["getrandom/js", "tpscube_core/web-storage", "instant/wasm-bindgen", "chrono/wasmbind"]
+wasm = ["wgpu-backend", "getrandom/js", "tpscube_core/web-storage", "instant/wasm-bindgen", "chrono/wasmbind"]
 wgpu-backend = ["eframe", "wgpu", "egui-wgpu"]
 
 [profile.dev]
