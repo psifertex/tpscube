@@ -50,12 +50,25 @@ struct FrameDrawResources {
 
 struct EframeApp {
     app: Box<dyn App>,
+    wake_lock: Option<keepawake::KeepAwake>,
 }
 
 impl eframe::App for EframeApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Let the inner application draw its egui UI.
         self.app.update(ctx, frame);
+
+        // Toggle screen sleep prevention based on app state.
+        if !self.app.screensaver_enabled() && self.wake_lock.is_none() {
+            self.wake_lock = keepawake::Builder::default()
+                .display(true)
+                .reason("Timing a solve")
+                .app_name("TPS Cube")
+                .create()
+                .ok();
+        } else if self.app.screensaver_enabled() && self.wake_lock.is_some() {
+            self.wake_lock = None;
+        }
 
         // Collect deferred cube draw commands from the inner app.
         let screen = ctx.screen_rect();
@@ -336,7 +349,7 @@ async fn main() {
                 .callback_resources
                 .insert(resources);
 
-            Ok(Box::new(EframeApp { app }))
+            Ok(Box::new(EframeApp { app, wake_lock: None }))
         }),
     )
     .unwrap();
