@@ -52,8 +52,8 @@ pub fn solve_time_short_string(time: u32) -> String {
 
 pub fn short_day_string(time: &DateTime<Local>) -> String {
     let now = Local::now();
-    let current_day = now.date();
-    let target_day = time.date();
+    let current_day = now.date_naive();
+    let target_day = time.date_naive();
     let days = (current_day - target_day).num_days();
     match days {
         0..=364 => format!(
@@ -71,8 +71,8 @@ pub fn short_day_string(time: &DateTime<Local>) -> String {
 
 pub fn date_string(time: &DateTime<Local>) -> String {
     let now = Local::now();
-    let current_day = now.date();
-    let target_day = time.date();
+    let current_day = now.date_naive();
+    let target_day = time.date_naive();
     let days = (current_day - target_day).num_days();
     match days {
         0 => format!(

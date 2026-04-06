@@ -68,8 +68,6 @@ impl eframe::App for EframeApp {
             {
                 let mut gl = GlContext {
                     draw_commands: &mut commands,
-                    screen_size: [width, height],
-                    pixels_per_point: ppp,
                 };
                 self.app.update_gl(ctx, &mut gl);
             }

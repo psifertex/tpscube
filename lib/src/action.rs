@@ -299,7 +299,7 @@ impl StoredAction {
                     }
                     None => return None,
                 };
-                let created = Local.timestamp(action.created(), 0);
+                let created = Local.timestamp_opt(action.created(), 0).unwrap();
                 let time = action.time();
                 let penalty = match action.penalty_type() {
                     action_generated::Penalty::TimePenalty => {

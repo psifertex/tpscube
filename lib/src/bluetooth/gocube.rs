@@ -19,8 +19,11 @@ struct GoCube {
 }
 
 impl GoCube {
+    #[allow(dead_code)]
     const ROTATE_MESSAGE: u8 = 0x01;
+    #[allow(dead_code)]
     const STATE_MESSAGE: u8 = 0x02;
+    #[allow(dead_code)]
     const BATTERY_MESSAGE: u8 = 0x05;
 
     const REQUEST_BATTERY_MESSAGE: u8 = 0x32;

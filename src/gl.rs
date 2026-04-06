@@ -23,8 +23,6 @@ pub struct GlContext<'a, 'b> {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct GlContext<'a> {
     pub draw_commands: &'a mut Vec<CubeDrawCommand>,
-    pub screen_size: [u32; 2],
-    pub pixels_per_point: f32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,6 +1,6 @@
 use crate::common::{parse_move_string, parse_timed_move_string, Penalty, Solve, SolveType};
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use serde_json::{Map, Value};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -115,7 +115,7 @@ impl ImportedSession {
                     .ok_or_else(|| anyhow!("Solve '{}' has no timestamp", id))?
                     .as_i64()
                     .ok_or_else(|| anyhow!("Solve '{}' has invalid timestamp", id))?;
-                let timestamp = Local.timestamp(timestamp, 0);
+                let timestamp = Local.timestamp_opt(timestamp, 0).unwrap();
 
                 let scramble_string = solve
                     .get("scramble")
@@ -304,7 +304,7 @@ impl ImportedSession {
                     .as_i64()
                     .ok_or_else(|| anyhow!("Timestamp is not an integer"))?;
                 let id = format!("cstimer:{}", timestamp);
-                let timestamp = Local.timestamp(timestamp, 0);
+                let timestamp = Local.timestamp_opt(timestamp, 0).unwrap();
 
                 // Parse move sequence (optional)
                 let moves = if let Some(moves) = solve.get(4) {
@@ -431,7 +431,7 @@ impl ImportedSession {
                 .ok_or_else(|| anyhow!("solution missing in solve"))?;
 
             // Parse fields
-            let date: DateTime<Local> = Utc.datetime_from_str(date, "%Y-%m-%d %H:%M:%S %Z")?.into();
+            let date: DateTime<Local> = NaiveDateTime::parse_from_str(date, "%Y-%m-%d %H:%M:%S %Z")?.and_utc().into();
             let dnf = match dnf {
                 "true" => true,
                 "false" => false,
