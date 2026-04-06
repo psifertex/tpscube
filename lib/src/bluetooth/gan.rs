@@ -4,9 +4,8 @@ use crate::common::{
 };
 use crate::cube3x3x3::{Cube3x3x3, Cube3x3x3Faces, Edge3x3x3, EdgePiece3x3x3};
 use aes::{
-    cipher::generic_array::GenericArray,
-    cipher::{BlockDecrypt, BlockEncrypt},
-    Aes128, Block, NewBlockCipher,
+    cipher::{BlockDecrypt, BlockEncrypt, KeyInit},
+    Aes128, Block,
 };
 use anyhow::{anyhow, Result};
 use btleplug::api::{Characteristic, Peripheral as _, WriteType};
@@ -324,7 +323,7 @@ impl BluetoothCubeDevice for GANCubeVersion1 {
 
     fn disconnect(&self) {
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.disconnect());
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.disconnect()));
     }
 
     // Older GAN cubes have *very* uncalibrated clocks
@@ -346,10 +345,10 @@ impl GANCubeVersion1Cipher {
         // Packets are larger than block size. First decrypt the last 16 bytes
         // of the packet in place.
         let mut value = value.to_vec();
-        let aes = Aes128::new(GenericArray::from_slice(&self.device_key));
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
         let offset = value.len() - 16;
         let end_cipher = &value[offset..];
-        let mut end_plain = Block::clone_from_slice(end_cipher);
+        let mut end_plain = Block::from(<[u8; 16]>::try_from(end_cipher).unwrap());
         aes.decrypt_block(&mut end_plain);
         for i in 0..16 {
             value[offset + i] = end_plain[i];
@@ -358,7 +357,7 @@ impl GANCubeVersion1Cipher {
         // Decrypt the first 16 bytes of the packet in place. This will overlap
         // with the decrypted block above.
         let start_cipher = &value[0..16];
-        let mut start_plain = Block::clone_from_slice(start_cipher);
+        let mut start_plain = Block::from(<[u8; 16]>::try_from(start_cipher).unwrap());
         aes.decrypt_block(&mut start_plain);
         for i in 0..16 {
             value[i] = start_plain[i];
@@ -639,10 +638,10 @@ impl GANCubeVersion2Cipher {
         // Packets are larger than block size. First decrypt the last 16 bytes
         // of the packet in place.
         let mut value = value.to_vec();
-        let aes = Aes128::new(GenericArray::from_slice(&self.device_key));
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
         let offset = value.len() - 16;
         let end_cipher = &value[offset..];
-        let mut end_plain = Block::clone_from_slice(end_cipher);
+        let mut end_plain = Block::from(<[u8; 16]>::try_from(end_cipher).unwrap());
         aes.decrypt_block(&mut end_plain);
         for i in 0..16 {
             end_plain[i] ^= self.device_iv[i];
@@ -652,7 +651,7 @@ impl GANCubeVersion2Cipher {
         // Decrypt the first 16 bytes of the packet in place. This will overlap
         // with the decrypted block above.
         let start_cipher = &value[0..16];
-        let mut start_plain = Block::clone_from_slice(start_cipher);
+        let mut start_plain = Block::from(<[u8; 16]>::try_from(start_cipher).unwrap());
         aes.decrypt_block(&mut start_plain);
         for i in 0..16 {
             start_plain[i] ^= self.device_iv[i];
@@ -673,8 +672,8 @@ impl GANCubeVersion2Cipher {
         for i in 0..16 {
             value[i] ^= self.device_iv[i];
         }
-        let mut cipher = Block::clone_from_slice(&value[0..16]);
-        let aes = Aes128::new(GenericArray::from_slice(&self.device_key));
+        let mut cipher = Block::from(<[u8; 16]>::try_from(&value[0..16]).unwrap());
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
         aes.encrypt_block(&mut cipher);
         for i in 0..16 {
             value[i] = cipher[i];
@@ -686,7 +685,7 @@ impl GANCubeVersion2Cipher {
         for i in 0..16 {
             value[offset + i] ^= self.device_iv[i];
         }
-        let mut cipher = Block::clone_from_slice(&value[offset..]);
+        let mut cipher = Block::from(<[u8; 16]>::try_from(&value[offset..]).unwrap());
         aes.encrypt_block(&mut cipher);
         for i in 0..16 {
             value[offset + i] = cipher[i];
@@ -749,7 +748,7 @@ impl BluetoothCubeDevice for GANCubeVersion2 {
 
     fn disconnect(&self) {
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.disconnect());
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.disconnect()));
     }
 }
 
@@ -816,7 +815,7 @@ impl BluetoothCubeDevice for GANSmartTimer {
 
     fn disconnect(&self) {
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.disconnect());
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.disconnect()));
     }
 }
 

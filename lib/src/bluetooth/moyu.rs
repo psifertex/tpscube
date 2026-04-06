@@ -150,7 +150,7 @@ impl BluetoothCubeDevice for MoYuCube {
 
     fn disconnect(&self) {
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.disconnect());
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.disconnect()));
     }
 }
 
