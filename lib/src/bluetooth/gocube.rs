@@ -264,11 +264,11 @@ impl BluetoothCubeDevice for GoCube {
 
     fn reset_cube_state(&self) {
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.write(
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.write(
             &self.write,
             &[Self::RESET_STATE_MESSAGE],
             WriteType::WithResponse,
-        ));
+        )));
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }

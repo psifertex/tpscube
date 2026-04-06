@@ -195,13 +195,13 @@ impl GANCubeVersion1 {
 
         // Read move data and move timing data (blocking from sync context)
         let handle = tokio::runtime::Handle::current();
-        let move_data = handle.block_on(self.device.read(&self.characteristics.last_moves))?;
+        let move_data = tokio::task::block_in_place(|| handle.block_on(self.device.read(&self.characteristics.last_moves)))?;
         if move_data.len() < 19 {
             return Err(anyhow!("Invalid last move data"));
         }
         let move_data = self.cipher.decrypt(&move_data)?;
 
-        let timing = handle.block_on(self.device.read(&self.characteristics.timing))?;
+        let timing = tokio::task::block_in_place(|| handle.block_on(self.device.read(&self.characteristics.timing)))?;
         if timing.len() < 19 {
             return Err(anyhow!("Invalid timing data"));
         }
@@ -302,11 +302,11 @@ impl BluetoothCubeDevice for GANCubeVersion1 {
             0xb6, 0x24, 0x6d, 0xdb,
         ];
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(self.device.write(
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.write(
             &self.characteristics.cube_state,
             &message,
             WriteType::WithResponse,
-        ));
+        )));
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }
@@ -734,10 +734,10 @@ impl BluetoothCubeDevice for GANCubeVersion2 {
         ];
         let message = self.cipher.encrypt(&message).unwrap();
         let handle = tokio::runtime::Handle::current();
-        let _ = handle.block_on(
+        let _ = tokio::task::block_in_place(|| handle.block_on(
             self.device
                 .write(&self.write, &message, WriteType::WithResponse),
-        );
+        ));
 
         *self.state.lock().unwrap() = Cube3x3x3::new();
     }
