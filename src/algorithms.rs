@@ -51,6 +51,7 @@ struct Sort {
     order: SortOrder,
 }
 
+#[allow(dead_code)]
 enum SortColumn {
     Count,
     RecognitionTime,
@@ -61,6 +62,7 @@ enum SortColumn {
     ExecutionTPS,
 }
 
+#[allow(dead_code)]
 enum SortOrder {
     Ascending,
     Descending,

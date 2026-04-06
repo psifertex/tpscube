@@ -196,7 +196,7 @@ impl BluetoothState {
             ui.add_space(16.0);
 
             ScrollArea::vertical().max_height(350.0)
-                .id_source("bluetooth_device_list")
+                .id_salt("bluetooth_device_list")
                 .show(ui, |ui| {
                     ui.visuals_mut().widgets.inactive.fg_stroke = Stroke {
                         width: 1.0,

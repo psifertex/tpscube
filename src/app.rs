@@ -18,7 +18,6 @@ use egui::{
     widgets::Label, CentralPanel, Color32, Event, Key, Layout, Rect, RichText, Rgba, Sense,
     Stroke, TopBottomPanel, Vec2,
 };
-use image::GenericImageView;
 use std::sync::{Arc, Mutex};
 use tpscube_core::{History, HistoryLoadProgress, Solve, SolveType, SyncStatus};
 
@@ -102,6 +101,7 @@ pub enum SolveDetails {
     AverageOfSolves(Vec<Solve>),
 }
 
+#[allow(dead_code)]
 pub trait App {
     fn warm_up_enabled(&self) -> bool {
         false
@@ -216,7 +216,7 @@ impl App for Application {
         "TPS Cube"
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let aspect = ctx.available_rect().width() / ctx.available_rect().height();
         let landscape = aspect > 1.0;
         let effective_height = if landscape {
@@ -234,7 +234,7 @@ impl App for Application {
             ScreenSize::VeryLarge
         };
 
-        if self.screen_size != new_screen_size {
+        if self.screen_size != new_screen_size || self.first_frame {
             self.screen_size = new_screen_size;
             ctx.set_fonts(font_definitions());
             ctx.style_mut(|s| s.text_styles = text_styles(self.screen_size));

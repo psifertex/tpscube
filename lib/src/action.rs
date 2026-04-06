@@ -568,7 +568,7 @@ impl ActionList {
         storage.put(self.name, builder.finished_data());
     }
 
-    pub fn iter(&self) -> ActionListIterator {
+    pub fn iter(&self) -> ActionListIterator<'_> {
         ActionListIterator {
             list: self,
             archive_iter: Some(self.archive.iter().enumerate()),

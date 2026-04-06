@@ -6,6 +6,7 @@ const REQUIRED_COUNT: usize = 10;
 
 pub(super) struct TPSReport<'a> {
     rows: Vec<AlgorithmRow>,
+    #[allow(dead_code)]
     sort: &'a mut Sort,
 }
 

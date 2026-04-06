@@ -399,7 +399,7 @@ impl TimerSession {
                 ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
                 ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
                 ScrollArea::vertical()
-                    .id_source("timer_solve_list")
+                    .id_salt("timer_solve_list")
                     .show(ui, |ui| {
                         let mut has_solves = false;
                         for (idx, solve) in self.solves.iter().enumerate().rev() {

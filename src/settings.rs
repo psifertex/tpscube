@@ -229,7 +229,7 @@ impl Settings {
                             )
                             .clicked()
                         {
-                            ui.output_mut(|o| o.copied_text = history.sync_key().into());
+                            ui.ctx().copy_text(history.sync_key().into());
                         }
                     }
                     ui.add(

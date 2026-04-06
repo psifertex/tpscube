@@ -153,27 +153,37 @@ impl egui_wgpu::CallbackTrait for CubeCallback {
 
     fn paint(
         &self,
-        _info: egui::PaintCallbackInfo,
+        info: egui::PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
         let resources: &CubeRenderResources = callback_resources.get().unwrap();
         render_pass.set_pipeline(&resources.pipeline);
+
+        // Convert logical-point viewports to physical pixels using the
+        // current DPI from PaintCallbackInfo, and clamp to render target.
+        let target_w = info.screen_size_px[0] as f32;
+        let target_h = info.screen_size_px[1] as f32;
+        let ppp = info.pixels_per_point;
+
         for frame_res in &resources.frame_resources {
+            let vp = &frame_res.viewport;
+            // Convert from logical points to physical pixels.
+            let x = (vp[0] * ppp).max(0.0);
+            let y = (vp[1] * ppp).max(0.0);
+            let w = (vp[2] * ppp).min(target_w - x);
+            let h = (vp[3] * ppp).min(target_h - y);
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+
             render_pass.set_bind_group(0, &frame_res.bind_group, &[]);
             render_pass.set_vertex_buffer(0, frame_res.vertex_buffer.slice(..));
             render_pass.set_index_buffer(
                 frame_res.index_buffer.slice(..),
                 wgpu::IndexFormat::Uint16,
             );
-            render_pass.set_viewport(
-                frame_res.viewport[0],
-                frame_res.viewport[1],
-                frame_res.viewport[2],
-                frame_res.viewport[3],
-                0.0,
-                1.0,
-            );
+            render_pass.set_viewport(x, y, w, h, 0.0, 1.0);
             render_pass.draw_indexed(0..frame_res.index_count, 0, 0..1);
         }
     }

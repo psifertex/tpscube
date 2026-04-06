@@ -46,6 +46,7 @@ impl TimerWidget {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_solving(&self) -> bool {
         self.state.is_solving()
     }

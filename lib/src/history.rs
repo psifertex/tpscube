@@ -257,7 +257,7 @@ impl History {
         Ok(result)
     }
 
-    pub fn iter(&self) -> SolveIterator {
+    pub fn iter(&self) -> SolveIterator<'_> {
         SolveIterator {
             solve: self.solves.solve_map.solves.iter(),
         }

@@ -222,7 +222,7 @@ impl GraphWidget {
                 ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
                 ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
                 ScrollArea::vertical()
-                    .id_source("left_graph_options_scroll")
+                    .id_salt("left_graph_options_scroll")
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
                             if solve_type.is_3x3x3() {

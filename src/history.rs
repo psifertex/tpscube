@@ -42,6 +42,7 @@ struct AllTimeBestRegion {
 }
 
 struct SessionRegion {
+    #[allow(dead_code)]
     session_id: String,
     name: String,
     solves: Vec<Solve>,
@@ -1295,7 +1296,7 @@ impl HistoryWidget {
             ui.visuals_mut().widgets.hovered.bg_fill = Theme::Disabled.into();
             ui.visuals_mut().widgets.active.bg_fill = Theme::Disabled.into();
             ScrollArea::vertical()
-                .id_source("history")
+                .id_salt("history")
                 .show_viewport(ui, |ui, viewport| {
                     let (rect, _) = ui.allocate_at_least(
                         Vec2::new(ui.max_rect().width(), self.total_height),

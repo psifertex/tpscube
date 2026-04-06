@@ -32,7 +32,7 @@ pub struct CubeDrawCommand {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u16>,
     pub uniforms: CubeUniforms,
-    pub viewport: [f32; 4], // x, y, width, height (pixel coords)
+    pub viewport: [f32; 4], // x, y, width, height (logical points, converted to pixels at paint time)
 }
 
 // WGSL uniform layout for Uniforms:
@@ -264,15 +264,10 @@ impl GlRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn begin(&mut self, _ctxt: &egui::Context, gl: &mut GlContext<'_>, rect: &Rect) {
-        let ppp = gl.pixels_per_point;
-        let _ = gl.screen_size; // not needed in wgpu (top-left origin)
-
-        let x = rect.left() * ppp;
-        let y = rect.top() * ppp;
-        let w = rect.width() * ppp;
-        let h = rect.height() * ppp;
-        self.viewport = [x, y, w, h];
+    pub fn begin(&mut self, _ctxt: &egui::Context, _gl: &mut GlContext<'_>, rect: &Rect) {
+        // Store viewport in logical points; pixel conversion happens at paint time
+        // using PaintCallbackInfo which has the correct DPI at render time.
+        self.viewport = [rect.left(), rect.top(), rect.width(), rect.height()];
 
         let proj = Self::projection_matrix(rect);
         mat4::multiply(&mut self.view_proj, &proj, &self.view);
