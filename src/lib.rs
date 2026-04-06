@@ -20,6 +20,10 @@ mod widgets;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod bluetooth;
+#[cfg(target_arch = "wasm32")]
+mod bluetooth_web;
+#[cfg(target_arch = "wasm32")]
+use bluetooth_web as bluetooth;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn is_mobile() -> Option<bool> {

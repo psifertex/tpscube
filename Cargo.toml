@@ -31,7 +31,7 @@ env_logger = "0.10"
 
 [features]
 default = ["tpscube_core/native-storage", "tpscube_core/bluetooth", "wgpu-backend"]
-wasm = ["wgpu-backend", "getrandom/js", "tpscube_core/web-storage", "instant/wasm-bindgen", "chrono/wasmbind"]
+wasm = ["wgpu-backend", "getrandom/js", "tpscube_core/web-storage", "tpscube_core/web-bluetooth", "instant/wasm-bindgen", "chrono/wasmbind"]
 wgpu-backend = ["eframe", "wgpu", "egui-wgpu"]
 
 [profile.dev]

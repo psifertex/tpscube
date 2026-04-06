@@ -19,10 +19,24 @@ serde = { version="1.0", features=["derive"] }
 serde_json = "1.0"
 base64 = "0.13"
 csv = "1.1"
+aes = { version="0.8", optional=true }
 
 [target.'cfg(target_arch="wasm32")'.dependencies]
 js-sys = { version="0.3", optional=true }
-web-sys = { version="0.3", optional=true, features=["Storage", "Window", "Headers", "Request", "RequestInit", "RequestMode", "Response", "DomException", "IdbFactory", "IdbRequest", "IdbOpenDbRequest", "IdbDatabase", "IdbObjectStore", "IdbVersionChangeEvent", "IdbRequestReadyState", "IdbTransaction", "IdbTransactionMode", "IdbObjectStore"] }
+web-sys = { version="0.3", optional=true, features=[
+    "Storage", "Window", "Headers", "Request", "RequestInit", "RequestMode",
+    "Response", "DomException", "IdbFactory", "IdbRequest", "IdbOpenDbRequest",
+    "IdbDatabase", "IdbObjectStore", "IdbVersionChangeEvent",
+    "IdbRequestReadyState", "IdbTransaction", "IdbTransactionMode",
+    "IdbObjectStore",
+    "Bluetooth", "BluetoothDevice", "BluetoothRemoteGattServer",
+    "BluetoothRemoteGattService", "BluetoothRemoteGattCharacteristic",
+    "BluetoothCharacteristicProperties", "BluetoothLeScanFilterInit",
+    "BluetoothAdvertisingEvent", "BluetoothManufacturerDataMap",
+    "WatchAdvertisementsOptions", "AbortController", "AbortSignal",
+    "RequestDeviceOptions", "Navigator", "Event", "EventTarget",
+    "console"
+] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
@@ -32,7 +46,6 @@ reqwest = { version="0.11", features=["rustls-tls", "blocking", "json"], optiona
 http = { version="0.2", optional=true }
 btleplug = { version="0.11", optional=true }
 futures = { version="0.3", optional=true }
-aes = { version="0.8", optional=true }
 tokio = { version="1.7", features=["full"] }
 
 [features]
@@ -42,3 +55,4 @@ storage = []
 native-storage = ["storage", "rocksdb", "reqwest", "http"]
 web-storage = ["storage", "js-sys", "web-sys", "uuid/js", "chrono/wasmbind"]
 bluetooth = ["btleplug", "aes", "futures"]
+web-bluetooth = ["aes", "js-sys", "web-sys"]

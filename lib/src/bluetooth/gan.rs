@@ -824,6 +824,10 @@ pub(crate) async fn gan_cube_connect(
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
     let characteristics = device.characteristics();
+    eprintln!("GAN: found {} characteristics", characteristics.len());
+    for c in &characteristics {
+        eprintln!("  characteristic: uuid={} service={}", c.uuid, c.service_uuid);
+    }
 
     // Find characteristics for communicating with the cube. There are two different
     // versions of the GAN cubes with different characteristics.
@@ -870,6 +874,10 @@ pub(crate) async fn gan_cube_connect(
     }
 
     // Create cube object based on available characteristics
+    eprintln!("GAN: v1_version={} v1_hardware={} v1_cube_state={} v1_last_moves={} v1_timing={} v1_battery={} v2_write={} v2_read={}",
+        v1_version.is_some(), v1_hardware.is_some(), v1_cube_state.is_some(),
+        v1_last_moves.is_some(), v1_timing.is_some(), v1_battery.is_some(),
+        v2_write.is_some(), v2_read.is_some());
     if v1_version.is_some()
         && v1_hardware.is_some()
         && v1_cube_state.is_some()
@@ -893,6 +901,7 @@ pub(crate) async fn gan_cube_connect(
         }
         let major = version[0];
         let minor = version[1];
+        eprintln!("GAN: version={:?} major={} minor={}", version, major, minor);
         if major == 1 && minor <= 1 {
             Ok(Box::new(
                 GANCubeVersion1::new(device, characteristics, move_listener, minor).await?,

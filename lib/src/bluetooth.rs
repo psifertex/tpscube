@@ -1,23 +1,52 @@
+#[cfg(not(target_arch = "wasm32"))]
 mod gan;
+#[cfg(not(target_arch = "wasm32"))]
 mod giiker;
+#[cfg(not(target_arch = "wasm32"))]
 mod gocube;
+#[cfg(not(target_arch = "wasm32"))]
 mod moyu;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod web;
+#[cfg(target_arch = "wasm32")]
+mod gan_web;
+#[cfg(target_arch = "wasm32")]
+mod giiker_web;
+#[cfg(target_arch = "wasm32")]
+mod gocube_web;
+#[cfg(target_arch = "wasm32")]
+mod moyu_web;
 
 use crate::common::TimedMove;
 use crate::cube3x3x3::Cube3x3x3;
+
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::{anyhow, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+#[cfg(not(target_arch = "wasm32"))]
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
+#[cfg(not(target_arch = "wasm32"))]
 use gan::gan_cube_connect;
+#[cfg(not(target_arch = "wasm32"))]
 use giiker::giiker_connect;
+#[cfg(not(target_arch = "wasm32"))]
 use gocube::gocube_connect;
+#[cfg(not(target_arch = "wasm32"))]
 use moyu::moyu_connect;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::ops::Deref;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait BluetoothCubeDevice: Send {
     fn cube_state(&self) -> Cube3x3x3;
     fn battery_percentage(&self) -> Option<u32>;
@@ -38,6 +67,29 @@ pub(crate) trait BluetoothCubeDevice: Send {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) trait BluetoothCubeDevice {
+    fn cube_state(&self) -> Cube3x3x3;
+    fn battery_percentage(&self) -> Option<u32>;
+    fn battery_charging(&self) -> Option<bool>;
+    fn reset_cube_state(&self);
+    fn synced(&self) -> bool;
+    fn update(&self) {}
+    fn disconnect(&self);
+    fn timer_only(&self) -> bool {
+        false
+    }
+
+    fn estimated_clock_ratio(&self) -> f64 {
+        1.0
+    }
+    fn clock_ratio_range(&self) -> (f64, f64) {
+        (0.98, 1.02)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 pub struct AvailableDevice {
     pub id: PeripheralId,
@@ -54,7 +106,7 @@ pub enum BluetoothCubeType {
 }
 
 impl BluetoothCubeType {
-    fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         if name.starts_with("GAN") || name.starts_with("MG") {
             Some(BluetoothCubeType::GAN)
         } else if name.starts_with("GoCube") || name.starts_with("Rubiks") {
@@ -88,6 +140,22 @@ pub enum BluetoothCubeEvent {
     TimerFinished(u32),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MoveListenerHandle {
+    id: u64,
+}
+
+impl MoveListenerHandle {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn new(id: u64) -> Self {
+        Self { id }
+    }
+}
+
+// ============================================================
+// Native (non-WASM) implementation using btleplug
+// ============================================================
+#[cfg(not(target_arch = "wasm32"))]
 pub struct BluetoothCube {
     discovered_devices: Arc<Mutex<Vec<AvailableDevice>>>,
     to_connect: Arc<Mutex<Option<PeripheralId>>>,
@@ -100,11 +168,7 @@ pub struct BluetoothCube {
     error: Arc<Mutex<Option<String>>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MoveListenerHandle {
-    id: u64,
-}
-
+#[cfg(not(target_arch = "wasm32"))]
 impl BluetoothCube {
     pub fn new() -> Self {
         let discovered_devices = Arc::new(Mutex::new(Vec::new()));
@@ -530,9 +594,16 @@ impl BluetoothCube {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for BluetoothCube {
     fn drop(&mut self) {
         // Clear connected device to force any polling threads to stop
         *self.connected_device.lock().unwrap() = None;
     }
 }
+
+// ============================================================
+// WASM implementation - re-export from web module
+// ============================================================
+#[cfg(target_arch = "wasm32")]
+pub use web::BluetoothCube;

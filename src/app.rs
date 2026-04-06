@@ -28,7 +28,6 @@ use instant::Instant;
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::bluetooth::BluetoothState;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -62,9 +61,7 @@ pub struct Application {
     screen_size: ScreenSize,
     solve_type: SolveType,
 
-    #[cfg(not(target_arch = "wasm32"))]
     bluetooth: BluetoothState,
-
     bluetooth_icon: Icon,
     bluetooth_dialog_open: bool,
 
@@ -186,9 +183,7 @@ impl Application {
             screen_size: ScreenSize::Normal,
             solve_type: SolveType::Standard3x3x3,
 
-            #[cfg(not(target_arch = "wasm32"))]
             bluetooth: BluetoothState::new(),
-
             bluetooth_icon,
             bluetooth_dialog_open: false,
 
@@ -352,7 +347,6 @@ impl App for Application {
                             }
 
                             // Show bluetooth button
-                            #[cfg(not(target_arch = "wasm32"))]
                             if let Some(tex) = self.bluetooth_icon.texture(ctx) {
                                 let response = ui.add(
                                     egui::Image::new(egui::load::SizedTexture::new(
@@ -373,6 +367,9 @@ impl App for Application {
                                         self.bluetooth.disconnect();
                                     } else {
                                         self.bluetooth_dialog_open = true;
+                                        #[cfg(target_arch = "wasm32")]
+                                        self.bluetooth.start_connect_flow(ctx, self.history.as_ref().unwrap());
+                                        #[cfg(not(target_arch = "wasm32"))]
                                         self.bluetooth.start_connect_flow(ctx);
                                     }
                                 }
@@ -393,9 +390,6 @@ impl App for Application {
                                 .on_hover_text(error);
                             }
 
-                            #[cfg(target_arch = "wasm32")]
-                            let allow_change_solve_type = true;
-                            #[cfg(not(target_arch = "wasm32"))]
                             let allow_change_solve_type = !self.bluetooth.active();
 
                             // Show solve type
@@ -433,10 +427,6 @@ impl App for Application {
             let mut details = None;
             match self.mode {
                 Mode::Timer => {
-                    #[cfg(target_arch = "wasm32")]
-                    let (bluetooth_state, bluetooth_events, bluetooth_name) =
-                        (None, Vec::new(), None);
-                    #[cfg(not(target_arch = "wasm32"))]
                     let (bluetooth_state, bluetooth_events, bluetooth_name) =
                         if !self.bluetooth_dialog_open && self.bluetooth.ready() {
                             if self.bluetooth.timer_only() {
@@ -565,7 +555,6 @@ impl App for Application {
                 }
             }
 
-            #[cfg(not(target_arch = "wasm32"))]
             if self.bluetooth_dialog_open {
                 let mut open = true;
                 self.bluetooth.update(
@@ -704,7 +693,6 @@ impl App for Application {
     #[cfg(target_arch = "wasm32")]
     fn update_gl(&mut self, ctx: &egui::Context, gl: &mut GlContext<'_>) {
         if self.bluetooth_dialog_open {
-            #[cfg(not(target_arch = "wasm32"))]
             if let Some(rect) = &self.bluetooth_cube_rect {
                 self.bluetooth.paint_cube(ctx, gl, rect).unwrap();
             }
@@ -724,7 +712,6 @@ impl App for Application {
     #[cfg(not(target_arch = "wasm32"))]
     fn update_gl(&mut self, ctx: &egui::Context, gl: &mut GlContext<'_>) {
         if self.bluetooth_dialog_open {
-            #[cfg(not(target_arch = "wasm32"))]
             if let Some(rect) = &self.bluetooth_cube_rect {
                 self.bluetooth.paint_cube(ctx, gl, rect).unwrap();
             }

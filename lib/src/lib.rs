@@ -19,7 +19,7 @@ mod storage;
 #[cfg(feature = "storage")]
 mod sync;
 
-#[cfg(feature = "bluetooth")]
+#[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
 mod bluetooth;
 
 #[allow(dead_code, unused_imports)]
@@ -53,6 +53,12 @@ pub use sync::SyncStatus;
 #[cfg(feature = "bluetooth")]
 pub use bluetooth::{
     AvailableDevice, BluetoothCube, BluetoothCubeEvent, BluetoothCubeState, BluetoothCubeType,
+    MoveListenerHandle,
+};
+
+#[cfg(feature = "web-bluetooth")]
+pub use bluetooth::{
+    BluetoothCube, BluetoothCubeEvent, BluetoothCubeState, BluetoothCubeType,
     MoveListenerHandle,
 };
 
