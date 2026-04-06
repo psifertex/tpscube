@@ -45,13 +45,25 @@ pub fn sized_text(text: impl Into<String>, size: FontSize) -> RichText {
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
 
+    // OpenSans has height_unscaled/units_per_em = 1.3618. egui 0.31+ applies
+    // this as a scaling multiplier (see egui#2068), making fonts ~36% larger
+    // than they were in egui 0.13. Compensate with FontTweak to preserve the
+    // original visual sizes.
+    let opensans_tweak = egui::FontTweak {
+        scale: 1.0 / 1.3618,
+        ..Default::default()
+    };
     fonts.font_data.insert(
         "OpenSans".into(),
-        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Regular.ttf")).into(),
+        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Regular.ttf"))
+            .tweak(opensans_tweak)
+            .into(),
     );
     fonts.font_data.insert(
         "OpenSans Light".into(),
-        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Light.ttf")).into(),
+        egui::FontData::from_static(include_bytes!("../fonts/OpenSans-Light.ttf"))
+            .tweak(opensans_tweak)
+            .into(),
     );
     fonts.font_data.insert(
         "emoji-icon-font".into(),
