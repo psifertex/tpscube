@@ -315,9 +315,14 @@ async fn main() {
         Err(error) => Box::new(app::ErrorApplication::new(error.to_string())),
     };
 
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../images/icon.png"))
+            .expect("Failed to load app icon");
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("TPS Cube"),
+            .with_title("TPS Cube")
+            .with_icon(std::sync::Arc::new(icon)),
         renderer: eframe::Renderer::Wgpu,
         // Request a depth buffer so the egui render pass includes a depth
         // attachment.  The 3D cube callback relies on this for correct
