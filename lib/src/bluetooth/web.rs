@@ -245,6 +245,7 @@ impl BluetoothCube {
             "00001000-0000-1000-8000-00805f9b34fb",
             "0000fd50-0000-1000-8000-00805f9b34fb",
             "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
+            "00000010-0000-fff7-fff6-fff5fff4fff0",
         ]
         .iter()
         .map(|s| js_sys::JsString::from(*s))
