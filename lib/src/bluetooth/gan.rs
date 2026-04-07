@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 use btleplug::api::{Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 use futures::StreamExt;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
 use std::str::FromStr;
@@ -819,6 +819,673 @@ impl BluetoothCubeDevice for GANSmartTimer {
     }
 }
 
+// ---- GAN v3 (Gen3 protocol, GAN356 i Carry 2) ----
+
+struct GANCubeVersion3 {
+    device: Peripheral,
+    state: Arc<Mutex<Cube3x3x3>>,
+    battery_percentage: Arc<Mutex<Option<u32>>>,
+    synced: Arc<Mutex<bool>>,
+    write: Characteristic,
+    cipher: GANCubeVersion3Cipher,
+}
+
+#[derive(Clone)]
+struct GANCubeVersion3Cipher {
+    device_key: [u8; 16],
+    device_iv: [u8; 16],
+}
+
+/// A buffered move awaiting delivery, used in the Gen3 FIFO buffer.
+struct Gen3BufferedMove {
+    serial: u8,
+    mv: Move,
+    timestamp: u32,
+}
+
+impl GANCubeVersion3Cipher {
+    fn decrypt(&self, value: &[u8]) -> Result<[u8; 16]> {
+        if value.len() != 16 {
+            return Err(anyhow!("Gen3 packet must be exactly 16 bytes"));
+        }
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
+        let mut block = Block::from(<[u8; 16]>::try_from(value).unwrap());
+        aes.decrypt_block(&mut block);
+        let mut result = [0u8; 16];
+        for i in 0..16 {
+            result[i] = block[i] ^ self.device_iv[i];
+        }
+        Ok(result)
+    }
+
+    fn encrypt(&self, value: &[u8; 16]) -> [u8; 16] {
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
+        let mut block = Block::default();
+        for i in 0..16 {
+            block[i] = value[i] ^ self.device_iv[i];
+        }
+        aes.encrypt_block(&mut block);
+        let mut result = [0u8; 16];
+        result.copy_from_slice(&block);
+        result
+    }
+}
+
+impl GANCubeVersion3 {
+    const CUBE_STATE_TIMEOUT_MS: usize = 2000;
+
+    pub async fn new(
+        device: Peripheral,
+        read: Characteristic,
+        write: Characteristic,
+        move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
+    ) -> Result<Self> {
+        // Derive keys from manufacturer data (same as Gen2)
+        let props = device
+            .properties()
+            .await?
+            .ok_or_else(|| anyhow!("Could not read peripheral properties"))?;
+        let device_key: [u8; 6] = if let Some(data) = props.manufacturer_data.get(&1) {
+            if data.len() >= 9 {
+                let mut result = [0; 6];
+                result.copy_from_slice(&data[3..9]);
+                result
+            } else {
+                return Err(anyhow!("Device identifier data invalid"));
+            }
+        } else {
+            return Err(anyhow!("Manufacturer data missing device identifier"));
+        };
+
+        const GAN_V3_KEY: [u8; 16] = [
+            0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11,
+            0x12, 0x53,
+        ];
+        const GAN_V3_IV: [u8; 16] = [
+            0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12,
+            0x02, 0x43,
+        ];
+        let mut key = GAN_V3_KEY;
+        let mut iv = GAN_V3_IV;
+        for (idx, byte) in device_key.iter().enumerate() {
+            key[idx] = ((key[idx] as u16 + *byte as u16) % 255) as u8;
+            iv[idx] = ((iv[idx] as u16 + *byte as u16) % 255) as u8;
+        }
+        let cipher = GANCubeVersion3Cipher {
+            device_key: key,
+            device_iv: iv,
+        };
+
+        let state = Arc::new(Mutex::new(Cube3x3x3::new()));
+        let state_set = Arc::new(Mutex::new(false));
+        let battery_percentage = Arc::new(Mutex::new(None));
+        let synced = Arc::new(Mutex::new(true));
+
+        let cipher_copy = cipher.clone();
+        let state_copy = state.clone();
+        let state_set_copy = state_set.clone();
+        let battery_percentage_copy = battery_percentage.clone();
+        let synced_copy = synced.clone();
+
+        // Subscribe and spawn notification handler
+        device.subscribe(&read).await?;
+        let mut notification_stream = device.notifications().await?;
+
+        // Shared state for FIFO buffer and serial tracking
+        let last_serial: Arc<Mutex<Option<u8>>> = Arc::new(Mutex::new(None));
+        let fifo_buffer: Arc<Mutex<VecDeque<Gen3BufferedMove>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+        let pending_history: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+
+        let last_serial_copy = last_serial.clone();
+        let fifo_buffer_copy = fifo_buffer.clone();
+        let pending_history_copy = pending_history.clone();
+
+        // We need a clone of the write characteristic and cipher for sending
+        // commands from within the notification handler
+        let write_copy = write.clone();
+        let device_copy = device.clone();
+        let cipher_for_handler = cipher.clone();
+
+        // Wrap the move_listener in Arc<Mutex<>> so it can be shared in the
+        // async spawned task (the closure is Send but not Sync)
+        let move_listener = Arc::new(Mutex::new(move_listener));
+
+        tokio::spawn(async move {
+            while let Some(value) = notification_stream.next().await {
+                if value.value.len() != 16 {
+                    continue;
+                }
+                let decrypted = match cipher_copy.decrypt(&value.value) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                // Validate magic byte and data length
+                if decrypted[0] != 0x55 {
+                    continue;
+                }
+                let event_type = decrypted[1];
+                let data_length = decrypted[2];
+                if data_length == 0 {
+                    continue;
+                }
+
+                match event_type {
+                    // MOVE event (0x01)
+                    0x01 => {
+                        // Must have initial state before processing moves
+                        if !*state_set_copy.lock().unwrap() {
+                            continue;
+                        }
+
+                        // Extract fields per spec
+                        let timestamp = u32::from_le_bytes([
+                            decrypted[3],
+                            decrypted[4],
+                            decrypted[5],
+                            decrypted[6],
+                        ]);
+                        let serial_16 =
+                            u16::from_le_bytes([decrypted[7], decrypted[8]]);
+                        let serial = (serial_16 & 0xFF) as u8;
+
+                        // Direction and face are in byte 9
+                        // Bits 72-73: direction (2 bits), bits 74-79: face bitmask (6 bits)
+                        let direction_and_face = decrypted[9];
+                        let direction = (direction_and_face >> 6) & 0x03;
+                        let face_bitmask = direction_and_face & 0x3F;
+
+                        let mv = match Self::decode_live_move(face_bitmask, direction) {
+                            Some(m) => m,
+                            None => continue,
+                        };
+
+                        // Add to FIFO buffer
+                        {
+                            let mut buffer = fifo_buffer_copy.lock().unwrap();
+                            buffer.push_back(Gen3BufferedMove {
+                                serial,
+                                mv,
+                                timestamp,
+                            });
+                        }
+
+                        // Try to evict/deliver
+                        Self::try_evict(
+                            &fifo_buffer_copy,
+                            &last_serial_copy,
+                            &state_copy,
+                            &synced_copy,
+                            &pending_history_copy,
+                            &move_listener,
+                            &write_copy,
+                            &device_copy,
+                            &cipher_for_handler,
+                        );
+                    }
+                    // FACELETS event (0x02)
+                    0x02 => {
+                        let serial_16 =
+                            u16::from_le_bytes([decrypted[3], decrypted[4]]);
+                        let serial = (serial_16 & 0xFF) as u8;
+
+                        // Parse corner/edge state using bit extraction
+                        // Bit offsets are from start of 16-byte message
+                        let mut corners = [0u32; 8];
+                        let mut corner_twist = [0u32; 8];
+                        let mut corners_left: HashSet<u32> =
+                            HashSet::from_iter([0, 1, 2, 3, 4, 5, 6, 7].iter().cloned());
+                        let mut edges = [0u32; 12];
+                        let mut edge_parity = [0u32; 12];
+                        let mut edges_left: HashSet<u32> = HashSet::from_iter(
+                            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].iter().cloned(),
+                        );
+                        let mut total_corner_twist = 0u32;
+                        let mut total_edge_parity = 0u32;
+
+                        let mut valid = true;
+                        // Corner permutation: 7 x 3 bits starting at bit 40
+                        for i in 0..7 {
+                            corners[i] =
+                                Self::extract_bits(&decrypted, 40 + i * 3, 3);
+                            corner_twist[i] =
+                                Self::extract_bits(&decrypted, 61 + i * 2, 2);
+                            total_corner_twist += corner_twist[i];
+                            if !corners_left.remove(&corners[i]) || corner_twist[i] >= 3
+                            {
+                                valid = false;
+                                break;
+                            }
+                        }
+
+                        if valid {
+                            // Edge permutation: 11 x 4 bits starting at bit 77
+                            // (note: 2-bit gap between corner orient end at 74 and edge perm start at 77)
+                            for i in 0..11 {
+                                edges[i] =
+                                    Self::extract_bits(&decrypted, 77 + i * 4, 4);
+                                edge_parity[i] =
+                                    Self::extract_bits(&decrypted, 121 + i, 1);
+                                total_edge_parity += edge_parity[i];
+                                if !edges_left.remove(&edges[i]) || edge_parity[i] >= 2
+                                {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if valid {
+                            corners[7] = *corners_left.iter().next().unwrap();
+                            edges[11] = *edges_left.iter().next().unwrap();
+                            corner_twist[7] = (3 - total_corner_twist % 3) % 3;
+                            edge_parity[11] = total_edge_parity & 1;
+
+                            let mut corner_pieces = Vec::with_capacity(8);
+                            let mut edge_pieces = Vec::with_capacity(12);
+                            for i in 0..8 {
+                                corner_pieces.push(CornerPiece {
+                                    piece: Corner::try_from(corners[i] as u8).unwrap(),
+                                    orientation: corner_twist[i] as u8,
+                                });
+                            }
+                            for i in 0..12 {
+                                edge_pieces.push(EdgePiece3x3x3 {
+                                    piece: Edge3x3x3::try_from(edges[i] as u8).unwrap(),
+                                    orientation: edge_parity[i] as u8,
+                                });
+                            }
+
+                            let cube = Cube3x3x3::from_corners_and_edges(
+                                corner_pieces.try_into().unwrap(),
+                                edge_pieces.try_into().unwrap(),
+                            );
+
+                            *state_copy.lock().unwrap() = cube;
+
+                            let was_set = *state_set_copy.lock().unwrap();
+                            *state_set_copy.lock().unwrap() = true;
+
+                            if !was_set {
+                                // First facelets event: initialize last_serial
+                                *last_serial_copy.lock().unwrap() = Some(serial);
+                            } else {
+                                // Periodic facelets: check for gaps
+                                // Skip gap check at serial 0 (rollover quirk)
+                                if serial != 0 {
+                                    let ls = *last_serial_copy.lock().unwrap();
+                                    if let Some(last) = ls {
+                                        let gap =
+                                            (serial.wrapping_sub(last)) as u8;
+                                        if gap > 1
+                                            && !*pending_history_copy.lock().unwrap()
+                                        {
+                                            // Request missing moves
+                                            Self::send_move_history_request(
+                                                last.wrapping_add(1),
+                                                gap - 1,
+                                                &write_copy,
+                                                &device_copy,
+                                                &cipher_for_handler,
+                                                &pending_history_copy,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // MOVE_HISTORY event (0x06)
+                    0x06 => {
+                        if data_length < 2 {
+                            continue;
+                        }
+                        let start_serial = decrypted[3];
+                        let num_moves = ((data_length - 1) * 2) as usize;
+
+                        // Parse history moves (4 bits each, starting at byte 4)
+                        let mut history_moves = Vec::with_capacity(num_moves);
+                        for i in 0..num_moves {
+                            let byte_idx = 4 + i / 2;
+                            if byte_idx >= 16 {
+                                break;
+                            }
+                            let nibble = if i % 2 == 0 {
+                                (decrypted[byte_idx] >> 4) & 0x0F
+                            } else {
+                                decrypted[byte_idx] & 0x0F
+                            };
+                            let face_idx = (nibble >> 1) & 0x07;
+                            let direction = nibble & 0x01;
+                            if let Some(mv) = Self::decode_history_move(face_idx, direction)
+                            {
+                                // History moves go from start_serial downward
+                                let serial =
+                                    start_serial.wrapping_sub(i as u8);
+                                history_moves.push(Gen3BufferedMove {
+                                    serial,
+                                    mv,
+                                    timestamp: 0, // No timestamps in history
+                                });
+                            }
+                        }
+
+                        // Inject history moves into FIFO buffer at the head
+                        {
+                            let mut buffer = fifo_buffer_copy.lock().unwrap();
+                            let ls = *last_serial_copy.lock().unwrap();
+                            for hm in history_moves {
+                                // Only inject if serial is in the gap
+                                let dominated_by_last = if let Some(last) = ls {
+                                    let diff = hm.serial.wrapping_sub(last);
+                                    diff == 0 || diff > 128
+                                } else {
+                                    false
+                                };
+                                if dominated_by_last {
+                                    continue;
+                                }
+                                // Check if serial already in buffer
+                                let already_in = buffer
+                                    .iter()
+                                    .any(|b| b.serial == hm.serial);
+                                if already_in {
+                                    continue;
+                                }
+                                // Insert at front of buffer
+                                buffer.push_front(hm);
+                            }
+                        }
+
+                        *pending_history_copy.lock().unwrap() = false;
+
+                        // Try to evict again
+                        Self::try_evict(
+                            &fifo_buffer_copy,
+                            &last_serial_copy,
+                            &state_copy,
+                            &synced_copy,
+                            &pending_history_copy,
+                            &move_listener,
+                            &write_copy,
+                            &device_copy,
+                            &cipher_for_handler,
+                        );
+                    }
+                    // BATTERY event (0x10)
+                    0x10 => {
+                        let level = decrypted[3] as u32;
+                        *battery_percentage_copy.lock().unwrap() =
+                            Some(level.min(100));
+                    }
+                    // DISCONNECT event (0x11)
+                    0x11 => {
+                        *synced_copy.lock().unwrap() = false;
+                    }
+                    _ => (),
+                }
+            }
+        });
+
+        // Request initial cube state
+        let mut loop_count = 0;
+        loop {
+            Self::send_command(
+                &[0x68, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                &write,
+                &device,
+                &cipher,
+            )
+            .await?;
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            if *state_set.lock().unwrap() {
+                break;
+            }
+
+            loop_count += 1;
+            if loop_count > Self::CUBE_STATE_TIMEOUT_MS / 200 {
+                return Err(anyhow!("Did not receive initial cube state"));
+            }
+        }
+
+        // Request battery state
+        Self::send_command(
+            &[0x68, 0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            &write,
+            &device,
+            &cipher,
+        )
+        .await?;
+
+        Ok(Self {
+            device,
+            state,
+            battery_percentage,
+            synced,
+            cipher,
+            write,
+        })
+    }
+
+    fn extract_bits(data: &[u8], start: usize, count: usize) -> u32 {
+        let mut result = 0;
+        for i in 0..count {
+            let bit = start + i;
+            result <<= 1;
+            if data[bit / 8] & (1 << (7 - (bit % 8))) != 0 {
+                result |= 1;
+            }
+        }
+        result
+    }
+
+    /// Decode a live move from face bitmask and direction.
+    /// Bitmask: U=2, R=32, F=8, D=1, L=16, B=4
+    /// Direction: 0=CW, 1=CCW
+    fn decode_live_move(face_bitmask: u8, direction: u8) -> Option<Move> {
+        let face_moves: &[(u8, Move, Move)] = &[
+            (2, Move::U, Move::Up),
+            (32, Move::R, Move::Rp),
+            (8, Move::F, Move::Fp),
+            (1, Move::D, Move::Dp),
+            (16, Move::L, Move::Lp),
+            (4, Move::B, Move::Bp),
+        ];
+        for &(mask, cw, ccw) in face_moves {
+            if face_bitmask == mask {
+                return Some(if direction == 0 { cw } else { ccw });
+            }
+        }
+        None
+    }
+
+    /// Decode a history move from 3-bit face index and 1-bit direction.
+    /// Face: 0=D, 1=U, 2=B, 3=F, 4=L, 5=R
+    /// Direction: 0=CW, 1=CCW
+    fn decode_history_move(face_idx: u8, direction: u8) -> Option<Move> {
+        let face_moves: &[(Move, Move)] = &[
+            (Move::D, Move::Dp),   // 0
+            (Move::U, Move::Up),   // 1
+            (Move::B, Move::Bp),   // 2
+            (Move::F, Move::Fp),   // 3
+            (Move::L, Move::Lp),   // 4
+            (Move::R, Move::Rp),   // 5
+        ];
+        if (face_idx as usize) < face_moves.len() {
+            let (cw, ccw) = face_moves[face_idx as usize];
+            Some(if direction == 0 { cw } else { ccw })
+        } else {
+            None
+        }
+    }
+
+    /// Try to evict moves from the FIFO buffer and deliver them.
+    fn try_evict(
+        fifo_buffer: &Arc<Mutex<VecDeque<Gen3BufferedMove>>>,
+        last_serial: &Arc<Mutex<Option<u8>>>,
+        state: &Arc<Mutex<Cube3x3x3>>,
+        synced: &Arc<Mutex<bool>>,
+        pending_history: &Arc<Mutex<bool>>,
+        move_listener: &Arc<Mutex<Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>>>,
+        write: &Characteristic,
+        device: &Peripheral,
+        cipher: &GANCubeVersion3Cipher,
+    ) {
+        loop {
+            let mut buffer = fifo_buffer.lock().unwrap();
+            if buffer.is_empty() {
+                break;
+            }
+
+            // Check buffer overflow
+            if buffer.len() > 16 {
+                *synced.lock().unwrap() = false;
+                buffer.clear();
+                break;
+            }
+
+            let ls = match *last_serial.lock().unwrap() {
+                Some(s) => s,
+                None => break,
+            };
+
+            let head_serial = buffer.front().unwrap().serial;
+            let diff = head_serial.wrapping_sub(ls);
+
+            if diff == 1 {
+                // Sequential - deliver
+                let entry = buffer.pop_front().unwrap();
+                drop(buffer); // Release lock before calling listener
+
+                state.lock().unwrap().do_move(entry.mv);
+                *last_serial.lock().unwrap() = Some(entry.serial);
+
+                let listener = move_listener.lock().unwrap();
+                listener(BluetoothCubeEvent::Move(
+                    vec![TimedMove::new(entry.mv, entry.timestamp)],
+                    state.lock().unwrap().clone(),
+                ));
+            } else if diff > 1 && diff < 128 {
+                // Gap detected - request history
+                drop(buffer);
+                if !*pending_history.lock().unwrap() {
+                    Self::send_move_history_request(
+                        ls.wrapping_add(1),
+                        diff - 1,
+                        write,
+                        device,
+                        cipher,
+                        pending_history,
+                    );
+                }
+                break;
+            } else {
+                // diff == 0 or wrapped backwards - skip this entry
+                buffer.pop_front();
+            }
+        }
+    }
+
+    /// Send a move history request command (blocking).
+    fn send_move_history_request(
+        start_serial: u8,
+        count: u8,
+        write: &Characteristic,
+        device: &Peripheral,
+        cipher: &GANCubeVersion3Cipher,
+        pending_history: &Arc<Mutex<bool>>,
+    ) {
+        // Align serial to odd (subtract 1 if even)
+        let mut serial = start_serial;
+        let mut count = count as u16;
+        if serial % 2 == 0 {
+            serial = serial.wrapping_sub(1);
+            count += 1;
+        }
+        // Align count to even
+        if count % 2 == 1 {
+            count += 1;
+        }
+        // Clamp for serial 255 rollover bug
+        count = count.min(serial as u16 + 1);
+
+        let count = count as u8;
+        let mut cmd = [0u8; 16];
+        cmd[0] = 0x68;
+        cmd[1] = 0x03;
+        cmd[2] = serial;
+        cmd[4] = count;
+
+        *pending_history.lock().unwrap() = true;
+        let encrypted = cipher.encrypt(&cmd);
+        // Fire and forget - spawn a task to send the command
+        let device = device.clone();
+        let write = write.clone();
+        tokio::spawn(async move {
+            let _ = device
+                .write(&write, &encrypted, WriteType::WithResponse)
+                .await;
+        });
+    }
+
+    /// Send an encrypted command to the cube.
+    async fn send_command(
+        cmd: &[u8; 16],
+        write: &Characteristic,
+        device: &Peripheral,
+        cipher: &GANCubeVersion3Cipher,
+    ) -> Result<()> {
+        let encrypted = cipher.encrypt(cmd);
+        device
+            .write(write, &encrypted, WriteType::WithResponse)
+            .await?;
+        Ok(())
+    }
+}
+
+impl BluetoothCubeDevice for GANCubeVersion3 {
+    fn cube_state(&self) -> Cube3x3x3 {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn battery_percentage(&self) -> Option<u32> {
+        *self.battery_percentage.lock().unwrap()
+    }
+
+    fn battery_charging(&self) -> Option<bool> {
+        None
+    }
+
+    fn reset_cube_state(&self) {
+        let cmd: [u8; 16] = [
+            0x68, 0x05, 0x05, 0x39, 0x77, 0x00, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x00,
+            0x00, 0x00,
+        ];
+        let encrypted = self.cipher.encrypt(&cmd);
+        let handle = tokio::runtime::Handle::current();
+        let _ = tokio::task::block_in_place(|| {
+            handle.block_on(
+                self.device
+                    .write(&self.write, &encrypted, WriteType::WithResponse),
+            )
+        });
+
+        *self.state.lock().unwrap() = Cube3x3x3::new();
+    }
+
+    fn synced(&self) -> bool {
+        *self.synced.lock().unwrap()
+    }
+
+    fn disconnect(&self) {
+        let handle = tokio::runtime::Handle::current();
+        let _ = tokio::task::block_in_place(|| handle.block_on(self.device.disconnect()));
+    }
+}
+
 pub(crate) async fn gan_cube_connect(
     device: Peripheral,
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
@@ -839,6 +1506,8 @@ pub(crate) async fn gan_cube_connect(
     let mut v1_battery = None;
     let mut v2_write = None;
     let mut v2_read = None;
+    let mut v3_write = None;
+    let mut v3_read = None;
     for characteristic in characteristics {
         if characteristic.uuid == Uuid::from_str("00002a28-0000-1000-8000-00805f9b34fb").unwrap() {
             v1_version = Some(characteristic);
@@ -870,14 +1539,22 @@ pub(crate) async fn gan_cube_connect(
             == Uuid::from_str("28be4cb6-cd67-11e9-a32f-2a2ae2dbcce4").unwrap()
         {
             v2_read = Some(characteristic);
+        } else if characteristic.uuid
+            == Uuid::from_str("8653000c-43e6-47b7-9cb0-5fc21d4ae340").unwrap()
+        {
+            v3_write = Some(characteristic);
+        } else if characteristic.uuid
+            == Uuid::from_str("8653000b-43e6-47b7-9cb0-5fc21d4ae340").unwrap()
+        {
+            v3_read = Some(characteristic);
         }
     }
 
     // Create cube object based on available characteristics
-    eprintln!("GAN: v1_version={} v1_hardware={} v1_cube_state={} v1_last_moves={} v1_timing={} v1_battery={} v2_write={} v2_read={}",
+    eprintln!("GAN: v1_version={} v1_hardware={} v1_cube_state={} v1_last_moves={} v1_timing={} v1_battery={} v2_write={} v2_read={} v3_write={} v3_read={}",
         v1_version.is_some(), v1_hardware.is_some(), v1_cube_state.is_some(),
         v1_last_moves.is_some(), v1_timing.is_some(), v1_battery.is_some(),
-        v2_write.is_some(), v2_read.is_some());
+        v2_write.is_some(), v2_read.is_some(), v3_write.is_some(), v3_read.is_some());
     if v1_version.is_some()
         && v1_hardware.is_some()
         && v1_cube_state.is_some()
@@ -920,6 +1597,11 @@ pub(crate) async fn gan_cube_connect(
     } else if v2_read.is_some() && v2_write.is_some() {
         Ok(Box::new(
             GANCubeVersion2::new(device, v2_read.unwrap(), v2_write.unwrap(), move_listener).await?,
+        ))
+    } else if v3_read.is_some() && v3_write.is_some() {
+        eprintln!("GAN: detected Gen3 cube (service 8653000a)");
+        Ok(Box::new(
+            GANCubeVersion3::new(device, v3_read.unwrap(), v3_write.unwrap(), move_listener).await?,
         ))
     } else {
         Err(anyhow!("Unrecognized GAN cube version"))

@@ -13,7 +13,7 @@ use aes::{
     Aes128, Block,
 };
 use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
 use std::sync::{Arc, Mutex};
@@ -168,6 +168,137 @@ impl BluetoothCubeDevice for GANCubeVersion2Web {
     }
 }
 
+// ---- GAN v3 (Gen3 protocol, GAN356 i Carry 2) ----
+
+#[allow(dead_code)]
+struct GANCubeVersion3Web {
+    server: web_sys::BluetoothRemoteGattServer,
+    state: Arc<Mutex<Cube3x3x3>>,
+    battery_percentage: Arc<Mutex<Option<u32>>>,
+    synced: Arc<Mutex<bool>>,
+    write: web_sys::BluetoothRemoteGattCharacteristic,
+    cipher: GANCubeVersion3WebCipher,
+}
+
+#[derive(Clone)]
+struct GANCubeVersion3WebCipher {
+    device_key: [u8; 16],
+    device_iv: [u8; 16],
+}
+
+impl GANCubeVersion3WebCipher {
+    fn decrypt(&self, value: &[u8]) -> Result<[u8; 16]> {
+        if value.len() != 16 {
+            return Err(anyhow!("Gen3 packet must be exactly 16 bytes"));
+        }
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
+        let mut block = Block::from(<[u8; 16]>::try_from(value).unwrap());
+        aes.decrypt_block(&mut block);
+        let mut result = [0u8; 16];
+        for i in 0..16 {
+            result[i] = block[i] ^ self.device_iv[i];
+        }
+        Ok(result)
+    }
+
+    fn encrypt(&self, value: &[u8; 16]) -> [u8; 16] {
+        let aes = Aes128::new_from_slice(&self.device_key).unwrap();
+        let mut block = Block::default();
+        for i in 0..16 {
+            block[i] = value[i] ^ self.device_iv[i];
+        }
+        aes.encrypt_block(&mut block);
+        let mut result = [0u8; 16];
+        result.copy_from_slice(&block);
+        result
+    }
+}
+
+impl GANCubeVersion3Web {
+    fn extract_bits(data: &[u8], start: usize, count: usize) -> u32 {
+        let mut result = 0;
+        for i in 0..count {
+            let bit = start + i;
+            result <<= 1;
+            if data[bit / 8] & (1 << (7 - (bit % 8))) != 0 {
+                result |= 1;
+            }
+        }
+        result
+    }
+
+    /// Decode a live move from face bitmask and direction.
+    fn decode_live_move(face_bitmask: u8, direction: u8) -> Option<Move> {
+        let face_moves: &[(u8, Move, Move)] = &[
+            (2, Move::U, Move::Up),
+            (32, Move::R, Move::Rp),
+            (8, Move::F, Move::Fp),
+            (1, Move::D, Move::Dp),
+            (16, Move::L, Move::Lp),
+            (4, Move::B, Move::Bp),
+        ];
+        for &(mask, cw, ccw) in face_moves {
+            if face_bitmask == mask {
+                return Some(if direction == 0 { cw } else { ccw });
+            }
+        }
+        None
+    }
+
+    /// Decode a history move from 3-bit face index and 1-bit direction.
+    fn decode_history_move(face_idx: u8, direction: u8) -> Option<Move> {
+        let face_moves: &[(Move, Move)] = &[
+            (Move::D, Move::Dp),
+            (Move::U, Move::Up),
+            (Move::B, Move::Bp),
+            (Move::F, Move::Fp),
+            (Move::L, Move::Lp),
+            (Move::R, Move::Rp),
+        ];
+        if (face_idx as usize) < face_moves.len() {
+            let (cw, ccw) = face_moves[face_idx as usize];
+            Some(if direction == 0 { cw } else { ccw })
+        } else {
+            None
+        }
+    }
+}
+
+impl BluetoothCubeDevice for GANCubeVersion3Web {
+    fn cube_state(&self) -> Cube3x3x3 {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn battery_percentage(&self) -> Option<u32> {
+        *self.battery_percentage.lock().unwrap()
+    }
+
+    fn battery_charging(&self) -> Option<bool> {
+        None
+    }
+
+    fn reset_cube_state(&self) {
+        let cmd: [u8; 16] = [
+            0x68, 0x05, 0x05, 0x39, 0x77, 0x00, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x00,
+            0x00, 0x00,
+        ];
+        let encrypted = self.cipher.encrypt(&cmd);
+        let write = self.write.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = write_characteristic(&write, &encrypted).await;
+        });
+        *self.state.lock().unwrap() = Cube3x3x3::new();
+    }
+
+    fn synced(&self) -> bool {
+        *self.synced.lock().unwrap()
+    }
+
+    fn disconnect(&self) {
+        self.server.disconnect();
+    }
+}
+
 // ---- GAN Smart Timer ----
 
 struct GANSmartTimerWeb {
@@ -224,6 +355,13 @@ pub(crate) async fn gan_web_connect(
     let v1_last_moves = find_characteristic(&all_chars, "0000fff5-0000-1000-8000-00805f9b34fb");
     let v2_write = find_characteristic(&all_chars, "28be4a4a-cd67-11e9-a32f-2a2ae2dbcce4");
     let v2_read = find_characteristic(&all_chars, "28be4cb6-cd67-11e9-a32f-2a2ae2dbcce4");
+    let v3_write = find_characteristic(&all_chars, "8653000c-43e6-47b7-9cb0-5fc21d4ae340");
+    let v3_read = find_characteristic(&all_chars, "8653000b-43e6-47b7-9cb0-5fc21d4ae340");
+
+    // GAN v3 cube (Gen3 protocol)
+    if let (Some(write_char), Some(read_char)) = (v3_write, v3_read) {
+        return try_gan_v3_connect(&server, read_char, write_char, user_device_key, listeners).await;
+    }
 
     // GAN v2 cube (notification-based)
     if let (Some(write_char), Some(read_char)) = (v2_write, v2_read) {
@@ -241,6 +379,406 @@ pub(crate) async fn gan_web_connect(
     Err(anyhow!(
         "Could not connect to GAN cube. Check the browser console for details."
     ))
+}
+
+async fn try_gan_v3_connect(
+    server: &web_sys::BluetoothRemoteGattServer,
+    read_char: web_sys::BluetoothRemoteGattCharacteristic,
+    write_char: web_sys::BluetoothRemoteGattCharacteristic,
+    user_device_key: Option<[u8; 6]>,
+    listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
+) -> Result<Box<dyn BluetoothCubeDevice>> {
+    // Derive 6-byte device key for AES encryption
+    let device_key: [u8; 6] = if let Some(key) = user_device_key {
+        key
+    } else {
+        match read_gan_v2_device_key(server).await {
+            Ok(key) => key,
+            Err(_) => {
+                web_sys::console::log_1(
+                    &"GAN v3: no device key available, using zeros. \
+                      Set your GAN cube MAC address in Settings for web support."
+                        .into(),
+                );
+                [0u8; 6]
+            }
+        }
+    };
+
+    const GAN_V3_KEY: [u8; 16] = [
+        0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11,
+        0x12, 0x53,
+    ];
+    const GAN_V3_IV: [u8; 16] = [
+        0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12,
+        0x02, 0x43,
+    ];
+    let mut key = GAN_V3_KEY;
+    let mut iv = GAN_V3_IV;
+    for (idx, byte) in device_key.iter().enumerate() {
+        key[idx] = ((key[idx] as u16 + *byte as u16) % 255) as u8;
+        iv[idx] = ((iv[idx] as u16 + *byte as u16) % 255) as u8;
+    }
+    let cipher = GANCubeVersion3WebCipher {
+        device_key: key,
+        device_iv: iv,
+    };
+
+    let state = Arc::new(Mutex::new(Cube3x3x3::new()));
+    let state_set = Arc::new(Mutex::new(false));
+    let battery_percentage = Arc::new(Mutex::new(None));
+    let synced = Arc::new(Mutex::new(true));
+
+    // FIFO buffer and serial tracking for move history recovery
+    let last_serial: Arc<Mutex<Option<u8>>> = Arc::new(Mutex::new(None));
+    let fifo_buffer: Arc<Mutex<VecDeque<(u8, Move, u32)>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
+    let pending_history: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+
+    let cipher_copy = cipher.clone();
+    let state_copy = state.clone();
+    let state_set_copy = state_set.clone();
+    let battery_percentage_copy = battery_percentage.clone();
+    let synced_copy = synced.clone();
+    let last_serial_copy = last_serial.clone();
+    let fifo_buffer_copy = fifo_buffer.clone();
+    let pending_history_copy = pending_history.clone();
+    let write_for_handler = write_char.clone();
+    let cipher_for_handler = cipher.clone();
+
+    subscribe_characteristic(&read_char, move |value| {
+        if value.len() != 16 {
+            return;
+        }
+        let decrypted = match cipher_copy.decrypt(&value) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        if decrypted[0] != 0x55 {
+            return;
+        }
+        let event_type = decrypted[1];
+        let data_length = decrypted[2];
+        if data_length == 0 {
+            return;
+        }
+
+        match event_type {
+            // MOVE event (0x01)
+            0x01 => {
+                if !*state_set_copy.lock().unwrap() {
+                    return;
+                }
+
+                let timestamp = u32::from_le_bytes([
+                    decrypted[3], decrypted[4], decrypted[5], decrypted[6],
+                ]);
+                let serial_16 = u16::from_le_bytes([decrypted[7], decrypted[8]]);
+                let serial = (serial_16 & 0xFF) as u8;
+                let direction_and_face = decrypted[9];
+                let direction = (direction_and_face >> 6) & 0x03;
+                let face_bitmask = direction_and_face & 0x3F;
+
+                let mv = match GANCubeVersion3Web::decode_live_move(face_bitmask, direction) {
+                    Some(m) => m,
+                    None => return,
+                };
+
+                fifo_buffer_copy.lock().unwrap().push_back((serial, mv, timestamp));
+
+                // Try to evict
+                try_evict_web(
+                    &fifo_buffer_copy,
+                    &last_serial_copy,
+                    &state_copy,
+                    &synced_copy,
+                    &pending_history_copy,
+                    &listeners,
+                    &write_for_handler,
+                    &cipher_for_handler,
+                );
+            }
+            // FACELETS event (0x02)
+            0x02 => {
+                let serial_16 = u16::from_le_bytes([decrypted[3], decrypted[4]]);
+                let serial = (serial_16 & 0xFF) as u8;
+
+                let mut corners = [0u32; 8];
+                let mut corner_twist = [0u32; 8];
+                let mut corners_left: HashSet<u32> =
+                    HashSet::from_iter([0, 1, 2, 3, 4, 5, 6, 7].iter().cloned());
+                let mut edges = [0u32; 12];
+                let mut edge_parity = [0u32; 12];
+                let mut edges_left: HashSet<u32> = HashSet::from_iter(
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].iter().cloned(),
+                );
+                let mut total_corner_twist = 0u32;
+                let mut total_edge_parity = 0u32;
+
+                let mut valid = true;
+                for i in 0..7 {
+                    corners[i] = GANCubeVersion3Web::extract_bits(&decrypted, 40 + i * 3, 3);
+                    corner_twist[i] = GANCubeVersion3Web::extract_bits(&decrypted, 61 + i * 2, 2);
+                    total_corner_twist += corner_twist[i];
+                    if !corners_left.remove(&corners[i]) || corner_twist[i] >= 3 {
+                        valid = false;
+                        break;
+                    }
+                }
+
+                if valid {
+                    for i in 0..11 {
+                        edges[i] = GANCubeVersion3Web::extract_bits(&decrypted, 77 + i * 4, 4);
+                        edge_parity[i] = GANCubeVersion3Web::extract_bits(&decrypted, 121 + i, 1);
+                        total_edge_parity += edge_parity[i];
+                        if !edges_left.remove(&edges[i]) || edge_parity[i] >= 2 {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if valid {
+                    corners[7] = *corners_left.iter().next().unwrap();
+                    edges[11] = *edges_left.iter().next().unwrap();
+                    corner_twist[7] = (3 - total_corner_twist % 3) % 3;
+                    edge_parity[11] = total_edge_parity & 1;
+
+                    let mut corner_pieces = Vec::with_capacity(8);
+                    let mut edge_pieces = Vec::with_capacity(12);
+                    for i in 0..8 {
+                        corner_pieces.push(CornerPiece {
+                            piece: Corner::try_from(corners[i] as u8).unwrap(),
+                            orientation: corner_twist[i] as u8,
+                        });
+                    }
+                    for i in 0..12 {
+                        edge_pieces.push(EdgePiece3x3x3 {
+                            piece: Edge3x3x3::try_from(edges[i] as u8).unwrap(),
+                            orientation: edge_parity[i] as u8,
+                        });
+                    }
+
+                    let cube = Cube3x3x3::from_corners_and_edges(
+                        corner_pieces.try_into().unwrap(),
+                        edge_pieces.try_into().unwrap(),
+                    );
+
+                    *state_copy.lock().unwrap() = cube;
+
+                    let was_set = *state_set_copy.lock().unwrap();
+                    *state_set_copy.lock().unwrap() = true;
+
+                    if !was_set {
+                        *last_serial_copy.lock().unwrap() = Some(serial);
+                    } else if serial != 0 {
+                        let ls = *last_serial_copy.lock().unwrap();
+                        if let Some(last) = ls {
+                            let gap = serial.wrapping_sub(last);
+                            if gap > 1 && !*pending_history_copy.lock().unwrap() {
+                                send_history_request_web(
+                                    last.wrapping_add(1),
+                                    gap - 1,
+                                    &write_for_handler,
+                                    &cipher_for_handler,
+                                    &pending_history_copy,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // MOVE_HISTORY event (0x06)
+            0x06 => {
+                if data_length < 2 {
+                    return;
+                }
+                let start_serial = decrypted[3];
+                let num_moves = ((data_length - 1) * 2) as usize;
+
+                let mut buffer = fifo_buffer_copy.lock().unwrap();
+                let ls = *last_serial_copy.lock().unwrap();
+
+                for i in 0..num_moves {
+                    let byte_idx = 4 + i / 2;
+                    if byte_idx >= 16 {
+                        break;
+                    }
+                    let nibble = if i % 2 == 0 {
+                        (decrypted[byte_idx] >> 4) & 0x0F
+                    } else {
+                        decrypted[byte_idx] & 0x0F
+                    };
+                    let face_idx = (nibble >> 1) & 0x07;
+                    let direction = nibble & 0x01;
+                    if let Some(mv) = GANCubeVersion3Web::decode_history_move(face_idx, direction) {
+                        let serial = start_serial.wrapping_sub(i as u8);
+                        let dominated = if let Some(last) = ls {
+                            let diff = serial.wrapping_sub(last);
+                            diff == 0 || diff > 128
+                        } else {
+                            false
+                        };
+                        if dominated {
+                            continue;
+                        }
+                        if buffer.iter().any(|(s, _, _)| *s == serial) {
+                            continue;
+                        }
+                        buffer.push_front((serial, mv, 0));
+                    }
+                }
+                drop(buffer);
+
+                *pending_history_copy.lock().unwrap() = false;
+
+                try_evict_web(
+                    &fifo_buffer_copy,
+                    &last_serial_copy,
+                    &state_copy,
+                    &synced_copy,
+                    &pending_history_copy,
+                    &listeners,
+                    &write_for_handler,
+                    &cipher_for_handler,
+                );
+            }
+            // BATTERY event (0x10)
+            0x10 => {
+                let level = decrypted[3] as u32;
+                *battery_percentage_copy.lock().unwrap() = Some(level.min(100));
+            }
+            // DISCONNECT event (0x11)
+            0x11 => {
+                *synced_copy.lock().unwrap() = false;
+            }
+            _ => (),
+        }
+    })
+    .await?;
+
+    // Request initial cube state
+    let mut loop_count = 0;
+    loop {
+        let cmd: [u8; 16] = [0x68, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let encrypted = cipher.encrypt(&cmd);
+        write_characteristic(&write_char, &encrypted).await?;
+
+        sleep_ms(200).await;
+
+        if *state_set.lock().unwrap() {
+            break;
+        }
+
+        loop_count += 1;
+        if loop_count > 10 {
+            return Err(anyhow!("Did not receive initial cube state"));
+        }
+    }
+
+    // Request battery state
+    let cmd: [u8; 16] = [0x68, 0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let encrypted = cipher.encrypt(&cmd);
+    write_characteristic(&write_char, &encrypted).await?;
+
+    Ok(Box::new(GANCubeVersion3Web {
+        server: server.clone(),
+        state,
+        battery_percentage,
+        synced,
+        write: write_char,
+        cipher,
+    }))
+}
+
+/// Try to evict moves from the Gen3 FIFO buffer (synchronous web version).
+fn try_evict_web(
+    fifo_buffer: &Arc<Mutex<VecDeque<(u8, Move, u32)>>>,
+    last_serial: &Arc<Mutex<Option<u8>>>,
+    state: &Arc<Mutex<Cube3x3x3>>,
+    synced: &Arc<Mutex<bool>>,
+    pending_history: &Arc<Mutex<bool>>,
+    listeners: &Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
+    write: &web_sys::BluetoothRemoteGattCharacteristic,
+    cipher: &GANCubeVersion3WebCipher,
+) {
+    loop {
+        let mut buffer = fifo_buffer.lock().unwrap();
+        if buffer.is_empty() {
+            break;
+        }
+        if buffer.len() > 16 {
+            *synced.lock().unwrap() = false;
+            buffer.clear();
+            break;
+        }
+        let ls = match *last_serial.lock().unwrap() {
+            Some(s) => s,
+            None => break,
+        };
+        let (head_serial, mv, timestamp) = *buffer.front().unwrap();
+        let diff = head_serial.wrapping_sub(ls);
+
+        if diff == 1 {
+            buffer.pop_front();
+            drop(buffer);
+            state.lock().unwrap().do_move(mv);
+            *last_serial.lock().unwrap() = Some(head_serial);
+            dispatch_moves(
+                listeners,
+                vec![TimedMove::new(mv, timestamp)],
+                state.lock().unwrap().clone(),
+            );
+        } else if diff > 1 && diff < 128 {
+            drop(buffer);
+            if !*pending_history.lock().unwrap() {
+                send_history_request_web(
+                    ls.wrapping_add(1),
+                    diff - 1,
+                    write,
+                    cipher,
+                    pending_history,
+                );
+            }
+            break;
+        } else {
+            buffer.pop_front();
+        }
+    }
+}
+
+/// Send a move history request for the Gen3 web implementation.
+fn send_history_request_web(
+    start_serial: u8,
+    count: u8,
+    write: &web_sys::BluetoothRemoteGattCharacteristic,
+    cipher: &GANCubeVersion3WebCipher,
+    pending_history: &Arc<Mutex<bool>>,
+) {
+    let mut serial = start_serial;
+    let mut count = count as u16;
+    if serial % 2 == 0 {
+        serial = serial.wrapping_sub(1);
+        count += 1;
+    }
+    if count % 2 == 1 {
+        count += 1;
+    }
+    count = count.min(serial as u16 + 1);
+
+    let mut cmd = [0u8; 16];
+    cmd[0] = 0x68;
+    cmd[1] = 0x03;
+    cmd[2] = serial;
+    cmd[4] = count as u8;
+
+    *pending_history.lock().unwrap() = true;
+    let encrypted = cipher.encrypt(&cmd);
+    let write = write.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = write_characteristic(&write, &encrypted).await;
+    });
 }
 
 async fn try_gan_v2_connect(
