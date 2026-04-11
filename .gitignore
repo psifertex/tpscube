@@ -9,3 +9,4 @@ web/tpscube_bg.wasm.gz
 web/manifest.appcache
 .DS_Store
 .cargo/config.toml
+.claude

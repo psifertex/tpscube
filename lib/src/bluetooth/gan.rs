@@ -933,11 +933,17 @@ impl GANCubeVersion3 {
 
         // Shared state for FIFO buffer and serial tracking
         let last_serial: Arc<Mutex<Option<u8>>> = Arc::new(Mutex::new(None));
+        // Cube clock of the most recent live MOVE event we've seen. Used to
+        // convert the cube's absolute (since-boot) timestamp into a per-move
+        // delta, which is what the BluetoothCube calibration layer expects.
+        // Same fix as Gen4 — see GANCubeVersion4::new for the rationale.
+        let last_live_timestamp: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
         let fifo_buffer: Arc<Mutex<VecDeque<Gen3BufferedMove>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let pending_history: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 
         let last_serial_copy = last_serial.clone();
+        let last_live_timestamp_copy = last_live_timestamp.clone();
         let fifo_buffer_copy = fifo_buffer.clone();
         let pending_history_copy = pending_history.clone();
 
@@ -1001,13 +1007,41 @@ impl GANCubeVersion3 {
                             None => continue,
                         };
 
+                        // First live move bootstraps last_serial. We don't
+                        // trust the facelets event for this — see Gen4 for
+                        // the full rationale (some cubes report serial=0 in
+                        // periodic facelets, which causes a bogus history
+                        // request and a phantom move).
+                        {
+                            let mut ls = last_serial_copy.lock().unwrap();
+                            if ls.is_none() {
+                                *ls = Some(serial.wrapping_sub(1));
+                            }
+                        }
+
+                        // Convert the cube's absolute since-boot timestamp
+                        // into a per-move delta. The calibration layer in
+                        // bluetooth.rs expects raw_move.time() to be a
+                        // delta (Gen2 protocol convention) and accumulates
+                        // it; passing the absolute value inflates solve
+                        // durations by orders of magnitude.
+                        let move_delta = {
+                            let mut last_ts = last_live_timestamp_copy.lock().unwrap();
+                            let delta = match *last_ts {
+                                Some(prev) => timestamp.wrapping_sub(prev),
+                                None => 0,
+                            };
+                            *last_ts = Some(timestamp);
+                            delta
+                        };
+
                         // Add to FIFO buffer
                         {
                             let mut buffer = fifo_buffer_copy.lock().unwrap();
                             buffer.push_back(Gen3BufferedMove {
                                 serial,
                                 mv,
-                                timestamp,
+                                timestamp: move_delta,
                             });
                         }
 
@@ -1104,15 +1138,20 @@ impl GANCubeVersion3 {
 
                             *state_copy.lock().unwrap() = cube;
 
-                            let was_set = *state_set_copy.lock().unwrap();
                             *state_set_copy.lock().unwrap() = true;
 
-                            if !was_set {
-                                // First facelets event: initialize last_serial
-                                *last_serial_copy.lock().unwrap() = Some(serial);
-                            } else {
-                                // Periodic facelets: check for gaps
-                                // Skip gap check at serial 0 (rollover quirk)
+                            // Do NOT initialize last_serial from the facelets
+                            // event — see Gen4 for the rationale. last_serial
+                            // is bootstrapped by the first live MOVE event
+                            // instead.
+                            //
+                            // Periodic facelets still drive the gap-detector
+                            // for the "missed last move" case, when the
+                            // facelets serial exceeds last_serial.
+                            {
+                                // Skip gap check at serial 0 (rollover quirk
+                                // and the always-zero periodic-facelets case
+                                // observed on some Gen4 hardware).
                                 if serial != 0 {
                                     let ls = *last_serial_copy.lock().unwrap();
                                     if let Some(last) = ls {
@@ -1121,10 +1160,17 @@ impl GANCubeVersion3 {
                                         if gap > 1
                                             && !*pending_history_copy.lock().unwrap()
                                         {
-                                            // Request missing moves
+                                            // Request `gap` moves ending at
+                                            // the current facelets serial.
+                                            // The history response packs
+                                            // newest-first starting at
+                                            // start_serial and going
+                                            // backward, so we pass the head
+                                            // (newest missing) serial and
+                                            // the full gap count.
                                             Self::send_move_history_request(
-                                                last.wrapping_add(1),
-                                                gap - 1,
+                                                serial,
+                                                gap,
                                                 &write_copy,
                                                 &device_copy,
                                                 &cipher_for_handler,
@@ -1372,9 +1418,14 @@ impl GANCubeVersion3 {
                 // Gap detected - request history
                 drop(buffer);
                 if !*pending_history.lock().unwrap() {
+                    // Request the full gap of moves ending at the head
+                    // serial. The cube packs the response newest-first
+                    // starting at `head_serial` and going backward, so
+                    // passing the head and the full diff returns moves
+                    // with serials head, head-1, ..., head-(diff-1).
                     Self::send_move_history_request(
-                        ls.wrapping_add(1),
-                        diff - 1,
+                        head_serial,
+                        diff,
                         write,
                         device,
                         cipher,
@@ -1398,18 +1449,20 @@ impl GANCubeVersion3 {
         cipher: &GANCubeVersion3Cipher,
         pending_history: &Arc<Mutex<bool>>,
     ) {
-        // Align serial to odd (subtract 1 if even)
+        // The history response is byte-aligned, packed in 4-bit nibbles
+        // starting from an odd serial. If `serial` is even, slide it back
+        // one (we'll get one already-known move which is harmlessly
+        // deduped). The reference implementation does NOT bump the count
+        // here.
         let mut serial = start_serial;
         let mut count = count as u16;
         if serial % 2 == 0 {
             serial = serial.wrapping_sub(1);
-            count += 1;
         }
-        // Align count to even
         if count % 2 == 1 {
             count += 1;
         }
-        // Clamp for serial 255 rollover bug
+        // Never cross the serial wraparound boundary (firmware bug).
         count = count.min(serial as u16 + 1);
 
         let count = count as u8;
@@ -1559,11 +1612,16 @@ impl GANCubeVersion4 {
 
         // Shared state for FIFO buffer and serial tracking
         let last_serial: Arc<Mutex<Option<u8>>> = Arc::new(Mutex::new(None));
+        // Cube clock of the most recent live MOVE event we've seen. Used to
+        // convert the cube's absolute (since-boot) timestamp into a per-move
+        // delta, which is what the BluetoothCube calibration layer expects.
+        let last_live_timestamp: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
         let fifo_buffer: Arc<Mutex<VecDeque<Gen3BufferedMove>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let pending_history: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 
         let last_serial_copy = last_serial.clone();
+        let last_live_timestamp_copy = last_live_timestamp.clone();
         let fifo_buffer_copy = fifo_buffer.clone();
         let pending_history_copy = pending_history.clone();
 
@@ -1622,12 +1680,43 @@ impl GANCubeVersion4 {
                             None => continue,
                         };
 
+                        // First live move bootstraps last_serial. We don't
+                        // trust the facelets event for this because some
+                        // Gen4 cubes report serial=0 in periodic facelets
+                        // unconditionally. Setting last_serial = serial - 1
+                        // makes try_evict treat this move as the next
+                        // expected one (diff=1) and accept it without
+                        // requesting bogus history.
+                        {
+                            let mut ls = last_serial_copy.lock().unwrap();
+                            if ls.is_none() {
+                                *ls = Some(serial.wrapping_sub(1));
+                            }
+                        }
+
+                        // Convert the cube's absolute since-boot timestamp
+                        // into a per-move delta. The BluetoothCube
+                        // calibration layer expects raw_move.time() to be a
+                        // delta from the previous move (Gen2 protocol
+                        // convention) and accumulates it; passing the raw
+                        // absolute value inflates solve durations by
+                        // several orders of magnitude.
+                        let move_delta = {
+                            let mut last_ts = last_live_timestamp_copy.lock().unwrap();
+                            let delta = match *last_ts {
+                                Some(prev) => timestamp.wrapping_sub(prev),
+                                None => 0,
+                            };
+                            *last_ts = Some(timestamp);
+                            delta
+                        };
+
                         {
                             let mut buffer = fifo_buffer_copy.lock().unwrap();
                             buffer.push_back(Gen3BufferedMove {
                                 serial,
                                 mv,
-                                timestamp,
+                                timestamp: move_delta,
                             });
                         }
 
@@ -1721,13 +1810,29 @@ impl GANCubeVersion4 {
 
                             *state_copy.lock().unwrap() = cube;
 
-                            let was_set = *state_set_copy.lock().unwrap();
                             *state_set_copy.lock().unwrap() = true;
 
-                            if !was_set {
-                                *last_serial_copy.lock().unwrap() = Some(serial);
-                            } else {
-                                // Skip gap check at serial 0 (rollover quirk)
+                            // Do NOT initialize last_serial from the facelets
+                            // event. On at least some Gen4 cubes (e.g.
+                            // GANic4) the periodic facelets event reports
+                            // serial=0 unconditionally — using it as a
+                            // baseline causes a phony history-recovery
+                            // request on the first real move, which returns
+                            // garbage data for the stale slots and decodes
+                            // as a phantom move. Instead, last_serial is
+                            // set by the first live MOVE event below.
+                            //
+                            // The serial==0 guard below also covers the
+                            // common case: the periodic facelets reports
+                            // 0, so the gap check is a no-op for those
+                            // cubes. For Gen4 cubes that DO populate the
+                            // facelets serial, this still catches the
+                            // "missed last move" case as long as the first
+                            // live move set last_serial first.
+                            {
+                                // Skip gap check at serial 0 (rollover quirk
+                                // and the always-zero periodic facelets
+                                // case).
                                 if serial != 0 {
                                     let ls = *last_serial_copy.lock().unwrap();
                                     if let Some(last) = ls {
@@ -1736,9 +1841,15 @@ impl GANCubeVersion4 {
                                         if gap > 1
                                             && !*pending_history_copy.lock().unwrap()
                                         {
+                                            // Request `gap` moves ending at the
+                                            // current facelets serial. The history
+                                            // response packs newest-first starting
+                                            // at `start_serial` and going backward,
+                                            // so we pass the head (newest missing)
+                                            // serial and the full gap count.
                                             Self::send_move_history_request(
-                                                last.wrapping_add(1),
-                                                gap - 1,
+                                                serial,
+                                                gap,
                                                 &write_copy,
                                                 &device_copy,
                                                 &cipher_for_handler,
@@ -1980,9 +2091,16 @@ impl GANCubeVersion4 {
             } else if diff > 1 && diff < 128 {
                 drop(buffer);
                 if !*pending_history.lock().unwrap() {
+                    // Request the full gap of moves ending at the head serial.
+                    // The cube packs the response newest-first starting at
+                    // `head_serial` and going backward, so passing the head
+                    // (and the full diff) returns moves with serials
+                    // head, head-1, ..., head-(diff-1) — exactly the gap plus
+                    // the head itself (which we already have, deduped on
+                    // injection).
                     Self::send_move_history_request(
-                        ls.wrapping_add(1),
-                        diff - 1,
+                        head_serial,
+                        diff,
                         write,
                         device,
                         cipher,
@@ -2007,13 +2125,18 @@ impl GANCubeVersion4 {
     ) {
         let mut serial = start_serial;
         let mut count = count as u16;
+        // The history response is byte-aligned, packed in 4-bit nibbles
+        // starting from an odd serial. If `serial` is even, slide it back
+        // one (we'll get one already-known move which is harmlessly deduped).
+        // The reference implementation does NOT bump the count here.
         if serial % 2 == 0 {
             serial = serial.wrapping_sub(1);
-            count += 1;
         }
         if count % 2 == 1 {
             count += 1;
         }
+        // Never cross the serial wraparound boundary (firmware bug; see
+        // GAN_GEN4_PROTOCOL_SPEC.md section 8.1).
         count = count.min(serial as u16 + 1);
 
         let count = count as u8;
@@ -2091,14 +2214,24 @@ impl BluetoothCubeDevice for GANCubeVersion4 {
     }
 }
 
+/// Returns true when verbose GAN BLE diagnostics are enabled. Set
+/// `TPSCUBE_BT_DEBUG=1` in the environment to turn them on. The diagnostics
+/// are off by default so the desktop UI doesn't fill stderr with connection
+/// chatter on every pair.
+fn gan_debug() -> bool {
+    std::env::var("TPSCUBE_BT_DEBUG").is_ok()
+}
+
 pub(crate) async fn gan_cube_connect(
     device: Peripheral,
     move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
     let characteristics = device.characteristics();
-    eprintln!("GAN: found {} characteristics", characteristics.len());
-    for c in &characteristics {
-        eprintln!("  characteristic: uuid={} service={}", c.uuid, c.service_uuid);
+    if gan_debug() {
+        eprintln!("GAN: found {} characteristics", characteristics.len());
+        for c in &characteristics {
+            eprintln!("  characteristic: uuid={} service={}", c.uuid, c.service_uuid);
+        }
     }
 
     // Find characteristics for communicating with the cube. There are two different
@@ -2174,11 +2307,13 @@ pub(crate) async fn gan_cube_connect(
     }
 
     // Create cube object based on available characteristics
-    eprintln!("GAN: v1_version={} v1_hardware={} v1_cube_state={} v1_last_moves={} v1_timing={} v1_battery={} v2_write={} v2_read={} v3_write={} v3_read={} v4_write={} v4_read={}",
-        v1_version.is_some(), v1_hardware.is_some(), v1_cube_state.is_some(),
-        v1_last_moves.is_some(), v1_timing.is_some(), v1_battery.is_some(),
-        v2_write.is_some(), v2_read.is_some(), v3_write.is_some(), v3_read.is_some(),
-        v4_write.is_some(), v4_read.is_some());
+    if gan_debug() {
+        eprintln!("GAN: v1_version={} v1_hardware={} v1_cube_state={} v1_last_moves={} v1_timing={} v1_battery={} v2_write={} v2_read={} v3_write={} v3_read={} v4_write={} v4_read={}",
+            v1_version.is_some(), v1_hardware.is_some(), v1_cube_state.is_some(),
+            v1_last_moves.is_some(), v1_timing.is_some(), v1_battery.is_some(),
+            v2_write.is_some(), v2_read.is_some(), v3_write.is_some(), v3_read.is_some(),
+            v4_write.is_some(), v4_read.is_some());
+    }
     if v1_version.is_some()
         && v1_hardware.is_some()
         && v1_cube_state.is_some()
@@ -2202,7 +2337,9 @@ pub(crate) async fn gan_cube_connect(
         }
         let major = version[0];
         let minor = version[1];
-        eprintln!("GAN: version={:?} major={} minor={}", version, major, minor);
+        if gan_debug() {
+            eprintln!("GAN: version={:?} major={} minor={}", version, major, minor);
+        }
         if major == 1 && minor <= 1 {
             Ok(Box::new(
                 GANCubeVersion1::new(device, characteristics, move_listener, minor).await?,
@@ -2219,7 +2356,9 @@ pub(crate) async fn gan_cube_connect(
             ))
         }
     } else if v4_read.is_some() && v4_write.is_some() {
-        eprintln!("GAN: detected Gen4 cube (service 00000010)");
+        if gan_debug() {
+            eprintln!("GAN: detected Gen4 cube (service 00000010)");
+        }
         Ok(Box::new(
             GANCubeVersion4::new(device, v4_read.unwrap(), v4_write.unwrap(), move_listener).await?,
         ))
@@ -2228,7 +2367,9 @@ pub(crate) async fn gan_cube_connect(
             GANCubeVersion2::new(device, v2_read.unwrap(), v2_write.unwrap(), move_listener).await?,
         ))
     } else if v3_read.is_some() && v3_write.is_some() {
-        eprintln!("GAN: detected Gen3 cube (service 8653000a)");
+        if gan_debug() {
+            eprintln!("GAN: detected Gen3 cube (service 8653000a)");
+        }
         Ok(Box::new(
             GANCubeVersion3::new(device, v3_read.unwrap(), v3_write.unwrap(), move_listener).await?,
         ))
