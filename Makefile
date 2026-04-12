@@ -1,4 +1,4 @@
-.PHONY: native mac web server
+.PHONY: native mac web server secure
 
 native:
 	cargo build --release
@@ -18,6 +18,9 @@ web:
 
 server: web
 	cd web && python3 -m http.server
+
+secure: web
+	python3 tools/https-server.py
 
 deploy: web
 	gzip -9 -k -f web/tpscube_bg.wasm

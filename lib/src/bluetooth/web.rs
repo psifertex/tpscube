@@ -48,6 +48,13 @@ impl BluetoothCube {
     /// Set the GAN device key from a MAC address string (e.g. "B0:48:1E:3B:6E:47").
     /// The 6 bytes of the MAC address are used as the device key for GAN v2
     /// encryption when manufacturer data is not available via Web Bluetooth.
+    ///
+    /// The MAC is entered by the user in human-readable forward order
+    /// (e.g. `B0:48:1E:3B:6E:47`) but the GAN cipher salt derivation expects
+    /// the bytes **reversed** — matching the byte order that native
+    /// btleplug reads out of the BLE advertisement's manufacturer data,
+    /// where GAN cubes encode the MAC in reverse. See
+    /// `GAN_GEN4_PROTOCOL_SPEC.md` §2.3.
     pub fn set_gan_device_key_from_mac(&self, mac: &str) {
         let bytes: Vec<u8> = mac
             .split(':')
@@ -55,7 +62,9 @@ impl BluetoothCube {
             .collect();
         if bytes.len() == 6 {
             let mut key = [0u8; 6];
-            key.copy_from_slice(&bytes);
+            for (i, b) in bytes.iter().enumerate() {
+                key[5 - i] = *b;
+            }
             *self.gan_device_key.lock().unwrap() = Some(key);
         } else {
             *self.gan_device_key.lock().unwrap() = None;
@@ -256,7 +265,7 @@ impl BluetoothCube {
         let device: web_sys::BluetoothDevice =
             JsFuture::from(bluetooth.request_device(&options))
                 .await
-                .map_err(|e| anyhow!("Device request failed: {:?}", e))?;
+                .map_err(|e| anyhow!("Device request failed: {}", js_error_string(&e)))?;
 
         let device_name = device.name().unwrap_or_default();
         let cube_type = BluetoothCubeType::from_name(&device_name)
@@ -264,15 +273,74 @@ impl BluetoothCube {
 
         *connected_name.lock().unwrap() = Some(device_name.clone());
 
-        // For GAN cubes, try to capture manufacturer data from BLE advertisements
-        // BEFORE connecting to GATT (the cube stops advertising after GATT connection).
-        // This requires the experimental Web Platform Features flag in Chrome.
-        // If it fails, we fall back to the user-provided MAC address key.
+        // For GAN cubes we need the device's MAC-derived key to build the
+        // cipher. We always attempt the `watchAdvertisements()` capture —
+        // where it works, it's authoritative, and it reveals whether the
+        // user-supplied MAC in settings is wrong. The user-supplied MAC
+        // is only used as a fallback when capture returns nothing.
+        //
+        // The capture is bounded by a ~5s timeout internally, which is the
+        // source of the "7-second stall before connect" observed on some
+        // browsers. That's acceptable on desktop Chrome (where capture
+        // usually succeeds early) but painful on iOS Safari / Bluefy
+        // where the API is either unimplemented or unreliable. See
+        // `try_capture_manufacturer_data` for the timeout.
         let captured_device_key: Option<[u8; 6]> = if matches!(cube_type, BluetoothCubeType::GAN) {
             Self::try_capture_manufacturer_data(&device).await
         } else {
             None
         };
+
+        // Log both sources so the user can compare via DevTools if the
+        // cipher is producing the wrong key. Don't log if neither is
+        // set (not informative).
+        #[cfg(target_arch = "wasm32")]
+        if matches!(cube_type, BluetoothCubeType::GAN) {
+            let fmt = |k: &[u8; 6]| -> String {
+                format!(
+                    "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                    k[0], k[1], k[2], k[3], k[4], k[5]
+                )
+            };
+            match (&captured_device_key, &gan_device_key) {
+                (Some(c), Some(u)) if c != u => {
+                    web_sys::console::warn_1(
+                        &format!(
+                            "[tpscube] GAN MAC mismatch — captured {} vs user-set {}. \
+                             Captured is authoritative; check your Settings → Bluetooth \
+                             → GAN Cube MAC Address. Note: both are shown in the salt \
+                             byte order (reversed from the MAC string you entered).",
+                            fmt(c),
+                            fmt(u)
+                        )
+                        .into(),
+                    );
+                }
+                (Some(c), _) => {
+                    web_sys::console::log_1(
+                        &format!("[tpscube] GAN MAC from advertisement: {}", fmt(c)).into(),
+                    );
+                }
+                (None, Some(u)) => {
+                    web_sys::console::log_1(
+                        &format!(
+                            "[tpscube] GAN MAC from settings (capture failed): {} \
+                             (salt byte order, reversed from the MAC string you entered)",
+                            fmt(u)
+                        )
+                        .into(),
+                    );
+                }
+                (None, None) => {
+                    web_sys::console::warn_1(
+                        &"[tpscube] No GAN MAC available (capture failed, no setting). \
+                          Cipher will use zeros and likely fail. Set your MAC in \
+                          Settings → Bluetooth → GAN Cube MAC Address."
+                            .into(),
+                    );
+                }
+            }
+        }
 
         // Connect to GATT server
         let gatt = device
@@ -281,15 +349,17 @@ impl BluetoothCube {
         let server: web_sys::BluetoothRemoteGattServer =
             JsFuture::from(gatt.connect())
                 .await
-                .map_err(|e| anyhow!("GATT connect failed: {:?}", e))?;
+                .map_err(|e| anyhow!("GATT connect failed: {}", js_error_string(&e)))?;
 
-        // Use captured manufacturer data if available, otherwise fall back to user key
+        // Captured MAC is authoritative when available; user MAC is the
+        // fallback for platforms where the advertisement capture doesn't
+        // work (e.g. iOS Safari / Bluefy).
         let effective_device_key = captured_device_key.or(gan_device_key);
 
         // Connect to the specific cube type
         let cube: Box<dyn BluetoothCubeDevice> = match cube_type {
             BluetoothCubeType::GAN => {
-                super::gan_web::gan_web_connect(server, device_name, effective_device_key, listeners.clone()).await?
+                super::gan::gan_web_connect(server, device_name, effective_device_key, listeners.clone()).await?
             }
             BluetoothCubeType::GoCube => {
                 super::gocube_web::gocube_web_connect(server, listeners.clone()).await?
@@ -435,6 +505,48 @@ impl Drop for BluetoothCube {
     }
 }
 
+/// Extract a human-readable string out of a JS value that we got from a
+/// rejected Promise or a failed wasm-bindgen call.
+///
+/// `{:?}` on a [`JsValue`] prints the wasm-bindgen handle index (e.g.
+/// `JsValue(2)`), not the actual JS value, so naive error messages like
+/// `anyhow!("Write failed: {:?}", e)` are useless for debugging. This
+/// helper tries a few decodings in order:
+///
+///   1. `DOMException` — Web Bluetooth errors are almost always this. We
+///      surface `name: message` (e.g. `NetworkError: GATT operation failed`).
+///   2. JS `Error` — same pattern.
+///   3. A plain string via `JsValue::as_string()`.
+///   4. `js_sys::JSON.stringify` as a last resort.
+///   5. `{:?}` as a final fallback so we never lose information entirely.
+///
+/// Also logs the raw JS value to the browser console via `console.log`
+/// so the full object is inspectable in DevTools.
+pub(crate) fn js_error_string(err: &JsValue) -> String {
+    web_sys::console::log_2(&"[tpscube] JS error:".into(), err);
+
+    if let Some(exc) = err.dyn_ref::<web_sys::DomException>() {
+        return format!("{}: {}", exc.name(), exc.message());
+    }
+    if let Some(e) = err.dyn_ref::<js_sys::Error>() {
+        let name: String = e.name().into();
+        let message: String = e.message().into();
+        if name.is_empty() && message.is_empty() {
+            return format!("{:?}", err);
+        }
+        return format!("{}: {}", name, message);
+    }
+    if let Some(s) = err.as_string() {
+        return s;
+    }
+    if let Ok(json) = js_sys::JSON::stringify(err) {
+        if let Some(s) = json.as_string() {
+            return s;
+        }
+    }
+    format!("{:?}", err)
+}
+
 /// Helper: read a characteristic value, returning bytes.
 pub(crate) async fn read_characteristic(
     characteristic: &web_sys::BluetoothRemoteGattCharacteristic,
@@ -442,7 +554,7 @@ pub(crate) async fn read_characteristic(
     let data_view: js_sys::DataView =
         JsFuture::from(characteristic.read_value())
             .await
-            .map_err(|e| anyhow!("Read failed: {:?}", e))?;
+            .map_err(|e| anyhow!("Read failed: {}", js_error_string(&e)))?;
     let len = data_view.byte_length() as usize;
     let mut bytes = vec![0u8; len];
     for i in 0..len {
@@ -452,17 +564,31 @@ pub(crate) async fn read_characteristic(
 }
 
 /// Helper: write bytes to a characteristic.
+///
+/// Uses the plain `writeValue()` method (not `writeValueWithResponse` or
+/// `writeValueWithoutResponse`) so the browser picks the right mode based
+/// on the characteristic's declared properties. Matches the reference
+/// `gan-web-bluetooth` implementation.
+///
+/// The historical reason we weren't doing this: `writeValue()` is marked
+/// deprecated in the Web Bluetooth spec in favor of the two explicit
+/// variants. But the explicit variants require the characteristic to
+/// declare the matching property — and on at least iOS Safari / Bluefy,
+/// the GAN Gen4 command characteristic is surfaced with only
+/// `writeWithoutResponse`, so `writeValueWithResponse` fails immediately.
+/// Plain `writeValue` adapts transparently and still works on desktop
+/// Chrome.
 pub(crate) async fn write_characteristic(
     characteristic: &web_sys::BluetoothRemoteGattCharacteristic,
     data: &[u8],
 ) -> Result<()> {
     let mut buf = data.to_vec();
     let promise = characteristic
-        .write_value_with_response_with_u8_slice(&mut buf)
-        .map_err(|e| anyhow!("Write call failed: {:?}", e))?;
+        .write_value_with_u8_slice(&mut buf)
+        .map_err(|e| anyhow!("Write call failed: {}", js_error_string(&e)))?;
     JsFuture::from(promise)
         .await
-        .map_err(|e| anyhow!("Write failed: {:?}", e))?;
+        .map_err(|e| anyhow!("Write failed: {}", js_error_string(&e)))?;
     Ok(())
 }
 
@@ -506,7 +632,7 @@ pub(crate) async fn get_service(
 ) -> Result<web_sys::BluetoothRemoteGattService> {
     JsFuture::from(server.get_primary_service_with_str(uuid))
         .await
-        .map_err(|e| anyhow!("Service {} not found: {:?}", uuid, e))
+        .map_err(|e| anyhow!("Service {} not found: {}", uuid, js_error_string(&e)))
 }
 
 /// Helper: get a characteristic by UUID string from a service.
@@ -516,7 +642,7 @@ pub(crate) async fn get_characteristic(
 ) -> Result<web_sys::BluetoothRemoteGattCharacteristic> {
     JsFuture::from(service.get_characteristic_with_str(uuid))
         .await
-        .map_err(|e| anyhow!("Characteristic {} not found: {:?}", uuid, e))
+        .map_err(|e| anyhow!("Characteristic {} not found: {}", uuid, js_error_string(&e)))
 }
 
 /// Helper: subscribe to notifications on a characteristic.
@@ -527,7 +653,7 @@ pub(crate) async fn subscribe_characteristic(
     let _: web_sys::BluetoothRemoteGattCharacteristic =
         JsFuture::from(characteristic.start_notifications())
             .await
-            .map_err(|e| anyhow!("Start notifications failed: {:?}", e))?;
+            .map_err(|e| anyhow!("Start notifications failed: {}", js_error_string(&e)))?;
 
     let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         let target = event.target().unwrap();
@@ -547,7 +673,7 @@ pub(crate) async fn subscribe_characteristic(
             "characteristicvaluechanged",
             closure.as_ref().unchecked_ref(),
         )
-        .map_err(|e| anyhow!("Failed to add event listener: {:?}", e))?;
+        .map_err(|e| anyhow!("Failed to add event listener: {}", js_error_string(&e)))?;
 
     // Leak the closure so it lives for the lifetime of the connection.
     closure.forget();

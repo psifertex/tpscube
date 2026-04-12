@@ -10,3 +10,5 @@ web/manifest.appcache
 .DS_Store
 .cargo/config.toml
 .claude
+.http-server/
+__pycache__

@@ -1,5 +1,10 @@
-#[cfg(not(target_arch = "wasm32"))]
+// The `gan` module contains shared Gen3/Gen4 protocol code (plus the
+// existing native btleplug and web-sys transport layers). Both the native
+// and wasm variants live inside `gan/` and are cfg-gated internally so we
+// only have one module declaration at this level.
+#[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
 mod gan;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod giiker;
 #[cfg(not(target_arch = "wasm32"))]
@@ -9,8 +14,6 @@ mod moyu;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web;
-#[cfg(target_arch = "wasm32")]
-mod gan_web;
 #[cfg(target_arch = "wasm32")]
 mod giiker_web;
 #[cfg(target_arch = "wasm32")]
