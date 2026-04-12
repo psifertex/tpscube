@@ -3,9 +3,8 @@ use crate::bluetooth::gan::gen34_protocol::{
     Gen34Event, Gen34Protocol, Gen34Wire, Gen3Wire, Gen4Wire,
 };
 use crate::bluetooth::web::{
-    dispatch_event, dispatch_moves, discover_all_characteristics, find_characteristic,
-    get_characteristic, get_service, read_characteristic, sleep_ms, subscribe_characteristic,
-    write_characteristic,
+    dispatch_event, dispatch_moves, get_characteristic, get_service, read_characteristic, sleep_ms,
+    subscribe_characteristic, write_characteristic,
 };
 use crate::bluetooth::{BluetoothCubeDevice, BluetoothCubeEvent, MoveListenerHandle};
 use crate::common::{Corner, CornerPiece, Cube, InitialCubeState, Move, TimedMove};
@@ -19,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
 use std::sync::{Arc, Mutex};
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
 
 // ---- GAN v2 (notification-based, newer cubes) ----
 
@@ -305,21 +306,18 @@ async fn try_gan_v4_connect(
     user_device_key: Option<[u8; 6]>,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    let device_key: [u8; 6] = if let Some(key) = user_device_key {
-        key
-    } else {
-        match read_gan_v2_device_key(server).await {
-            Ok(key) => key,
-            Err(_) => {
-                web_sys::console::log_1(
-                    &"GAN v4: no device key available, using zeros. \
-                      Set your GAN cube MAC address in Settings for web support."
-                        .into(),
-                );
-                [0u8; 6]
-            }
-        }
-    };
+    // Use the device key from the advertisement capture or user MAC setting.
+    // Do NOT fall back to read_gan_v2_device_key here — that reads the System
+    // ID characteristic (2 extra GATT calls), and Gen4 cubes don't have it
+    // anyway. cstimer doesn't do this either.
+    let device_key: [u8; 6] = user_device_key.unwrap_or_else(|| {
+        web_sys::console::log_1(
+            &"GAN v4: no device key available, using zeros. \
+              Set your GAN cube MAC address in Settings for web support."
+                .into(),
+        );
+        [0u8; 6]
+    });
 
     let cipher = GanV2Cipher::from_device_key(&device_key);
 
@@ -372,13 +370,33 @@ async fn try_gan_v4_connect(
     })
     .await?;
 
-    // Request initial cube state
-    let mut loop_count = 0;
-    loop {
+    // Match cstimer's init sequence exactly:
+    //   1. Request hardware info (handshake — the cube may expect this first)
+    //   2. Request facelets (send once, wait for notification callback)
+    //   3. Request battery
+    // Previously we were looping the facelets request up to 10 times with
+    // 200ms sleeps, which could spam the cube with duplicate writes and
+    // cause it to disconnect on some BLE stacks (notably iOS Bluefy).
+
+    // 1. Hardware info request: DF 03 00 00 ... (20 bytes)
+    {
+        let mut cmd = vec![0u8; 20];
+        cmd[0] = 0xDF;
+        cmd[1] = 0x03;
+        let encrypted = cipher.encrypt(&cmd)?;
+        write_characteristic(&write_char, &encrypted).await?;
+    }
+
+    // 2. Request facelets — send ONCE, then wait
+    {
         let cmd = Gen34Protocol::<Gen4Wire>::build_state_request();
         let encrypted = cipher.encrypt(&cmd)?;
         write_characteristic(&write_char, &encrypted).await?;
+    }
 
+    // Wait for the cube to respond with the facelets state.
+    let mut loop_count = 0;
+    loop {
         sleep_ms(200).await;
 
         if protocol.lock().unwrap().state_set() {
@@ -387,12 +405,20 @@ async fn try_gan_v4_connect(
         }
 
         loop_count += 1;
-        if loop_count > 10 {
+        if loop_count > 25 {
             return Err(anyhow!("Did not receive initial cube state"));
+        }
+
+        // Re-send the request only every 5th iteration (once per second)
+        // instead of every 200ms, to avoid overwhelming the cube.
+        if loop_count % 5 == 0 {
+            let cmd = Gen34Protocol::<Gen4Wire>::build_state_request();
+            let encrypted = cipher.encrypt(&cmd)?;
+            write_characteristic(&write_char, &encrypted).await?;
         }
     }
 
-    // Request battery state
+    // 3. Request battery
     let cmd = Gen34Protocol::<Gen4Wire>::build_battery_request();
     let encrypted = cipher.encrypt(&cmd)?;
     write_characteristic(&write_char, &encrypted).await?;
@@ -414,21 +440,14 @@ async fn try_gan_v3_connect(
     user_device_key: Option<[u8; 6]>,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    let device_key: [u8; 6] = if let Some(key) = user_device_key {
-        key
-    } else {
-        match read_gan_v2_device_key(server).await {
-            Ok(key) => key,
-            Err(_) => {
-                web_sys::console::log_1(
-                    &"GAN v3: no device key available, using zeros. \
-                      Set your GAN cube MAC address in Settings for web support."
-                        .into(),
-                );
-                [0u8; 6]
-            }
-        }
-    };
+    let device_key: [u8; 6] = user_device_key.unwrap_or_else(|| {
+        web_sys::console::log_1(
+            &"GAN v3: no device key available, using zeros. \
+              Set your GAN cube MAC address in Settings for web support."
+                .into(),
+        );
+        [0u8; 6]
+    });
 
     let cipher = GanV3Cipher::from_device_key(&device_key);
 
@@ -480,13 +499,25 @@ async fn try_gan_v3_connect(
     })
     .await?;
 
-    // Request initial cube state
-    let mut loop_count = 0;
-    loop {
+    // Match cstimer's init sequence: hardware info → facelets → battery.
+    // Gen3 hardware info: 68 04 (16 bytes)
+    {
+        let mut cmd = vec![0u8; 16];
+        cmd[0] = 0x68;
+        cmd[1] = 0x04;
+        let encrypted = encrypt_gen3_cmd_web(&cipher, &cmd);
+        write_characteristic(&write_char, &encrypted).await?;
+    }
+
+    // Request facelets — send once, then wait
+    {
         let cmd = Gen34Protocol::<Gen3Wire>::build_state_request();
         let encrypted = encrypt_gen3_cmd_web(&cipher, &cmd);
         write_characteristic(&write_char, &encrypted).await?;
+    }
 
+    let mut loop_count = 0;
+    loop {
         sleep_ms(200).await;
 
         if protocol.lock().unwrap().state_set() {
@@ -495,12 +526,18 @@ async fn try_gan_v3_connect(
         }
 
         loop_count += 1;
-        if loop_count > 10 {
+        if loop_count > 25 {
             return Err(anyhow!("Did not receive initial cube state"));
+        }
+
+        if loop_count % 5 == 0 {
+            let cmd = Gen34Protocol::<Gen3Wire>::build_state_request();
+            let encrypted = encrypt_gen3_cmd_web(&cipher, &cmd);
+            write_characteristic(&write_char, &encrypted).await?;
         }
     }
 
-    // Request battery state
+    // Request battery
     let cmd = Gen34Protocol::<Gen3Wire>::build_battery_request();
     let encrypted = encrypt_gen3_cmd_web(&cipher, &cmd);
     write_characteristic(&write_char, &encrypted).await?;
@@ -563,77 +600,132 @@ pub(crate) async fn gan_web_connect(
     user_device_key: Option<[u8; 6]>,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
-    // Discover all characteristics, same approach as native btleplug code
-    let all_chars = discover_all_characteristics(&server).await;
-
-    // Match characteristics by UUID, mirroring native gan_cube_connect
-    let v1_version = find_characteristic(&all_chars, "00002a28-0000-1000-8000-00805f9b34fb");
-    let v2_write = find_characteristic(&all_chars, "28be4a4a-cd67-11e9-a32f-2a2ae2dbcce4");
-    let v2_read = find_characteristic(&all_chars, "28be4cb6-cd67-11e9-a32f-2a2ae2dbcce4");
-    let v3_write = find_characteristic(&all_chars, "8653000c-43e6-47b7-9cb0-5fc21d4ae340");
-    let v3_read = find_characteristic(&all_chars, "8653000b-43e6-47b7-9cb0-5fc21d4ae340");
-
-    // Gen4 uses characteristic UUIDs 0000fff5 and 0000fff6 under a different service.
-    // We detect Gen4 by checking for the Gen4 service UUID 00000010-0000-fff7-fff6-fff5fff4fff0.
-    // Web Bluetooth characteristics include service info, so we check the service.
-    let v4_service = try_get_service(&server, "00000010-0000-fff7-fff6-fff5fff4fff0").await;
-    let (v4_write, v4_read) = if let Some(ref svc) = v4_service {
-        let w = try_get_char(svc, "0000fff5-0000-1000-8000-00805f9b34fb").await;
-        let r = try_get_char(svc, "0000fff6-0000-1000-8000-00805f9b34fb").await;
-        (w, r)
-    } else {
-        (None, None)
-    };
-
-    // For v1, only use 0000fff5 if we did NOT detect Gen4 (since they share the UUID)
-    let v1_last_moves = if v4_write.is_none() {
-        find_characteristic(&all_chars, "0000fff5-0000-1000-8000-00805f9b34fb")
-    } else {
-        None
-    };
-
-    // GAN v4 cube (Gen4 protocol) - check before v2 for backward compatibility
-    if let (Some(write_char), Some(read_char)) = (v4_write, v4_read) {
-        return try_gan_v4_connect(&server, read_char, write_char, user_device_key, listeners).await;
+    // Detect which GAN protocol this cube uses. Matching cstimer's pattern:
+    // one getPrimaryServices() call (plural, returns ALL), then search
+    // locally by UUID. This avoids multiple getPrimaryService(uuid) calls
+    // which some Web Bluetooth implementations (notably Bluefy) don't
+    // support reliably for non-standard service UUIDs.
+    //
+    // Once we find the right service, one getCharacteristics() call gets
+    // all its chars. Total GATT round-trips: 1 (services) + 1 (chars).
+    let all_services = get_all_services(&server).await;
+    if all_services.is_empty() {
+        return Err(anyhow!(
+            "No GATT services found. The cube may have disconnected during discovery."
+        ));
     }
 
-    // GAN v3 cube (Gen3 protocol)
-    if let (Some(write_char), Some(read_char)) = (v3_write, v3_read) {
-        return try_gan_v3_connect(&server, read_char, write_char, user_device_key, listeners).await;
+    let svc_uuids: Vec<String> = all_services.iter().map(|s| s.uuid()).collect();
+    let svc_list = svc_uuids.join(", ");
+
+    // Try Gen4 first (GAN12 ui / GAN14 ui / GANiC4).
+    if let Some(svc) = find_service_by_uuid(&all_services, "00000010") {
+        let chars = try_get_all_chars(&svc).await;
+        let write_char = find_char_by_uuid(&chars, "fff5");
+        let read_char = find_char_by_uuid(&chars, "fff6");
+        if let (Some(w), Some(r)) = (write_char, read_char) {
+            return try_gan_v4_connect(&server, r, w, user_device_key, listeners).await;
+        }
     }
 
-    // GAN v2 cube (notification-based)
-    if let (Some(write_char), Some(read_char)) = (v2_write, v2_read) {
-        return try_gan_v2_connect(&server, read_char, write_char, user_device_key, listeners).await;
+    // Try Gen3 (GAN356 i Carry 2).
+    if let Some(svc) = find_service_by_uuid(&all_services, "8653000a") {
+        let chars = try_get_all_chars(&svc).await;
+        let write_char = find_char_by_uuid(&chars, "8653000c");
+        let read_char = find_char_by_uuid(&chars, "8653000b");
+        if let (Some(w), Some(r)) = (write_char, read_char) {
+            return try_gan_v3_connect(&server, r, w, user_device_key, listeners).await;
+        }
     }
 
-    // GAN Smart Timer (v1 service, version 2.0)
-    if let (Some(version_char), Some(updates_char)) = (v1_version, v1_last_moves) {
-        let version = read_characteristic(&version_char).await?;
-        if version.len() >= 3 && version[0] == 2 && version[1] == 0 {
-            return try_gan_v1_as_timer_with_char(updates_char, listeners).await;
+    // Try Gen2 (GAN356i v2 / GAN356 XS).
+    if let Some(svc) = find_service_by_uuid(&all_services, "6e400001") {
+        let chars = try_get_all_chars(&svc).await;
+        let write_char = find_char_by_uuid(&chars, "28be4a4a");
+        let read_char = find_char_by_uuid(&chars, "28be4cb6");
+        if let (Some(w), Some(r)) = (write_char, read_char) {
+            return try_gan_v2_connect(&server, r, w, user_device_key, listeners).await;
+        }
+    }
+
+    // Try GAN Smart Timer (v1 service, version 2.0).
+    if let Some(svc) = find_service_by_uuid(&all_services, "0000fff0") {
+        let chars = try_get_all_chars(&svc).await;
+        if let Some(updates_char) = find_char_by_uuid(&chars, "fff5") {
+            if let Some(dev_info) = find_service_by_uuid(&all_services, "0000180a") {
+                let dev_chars = try_get_all_chars(&dev_info).await;
+                if let Some(version_char) = find_char_by_uuid(&dev_chars, "2a28") {
+                    if let Ok(version) = read_characteristic(&version_char).await {
+                        if version.len() >= 3 && version[0] == 2 && version[1] == 0 {
+                            return try_gan_v1_as_timer_with_char(updates_char, listeners).await;
+                        }
+                    }
+                }
+            }
         }
     }
 
     Err(anyhow!(
-        "Could not connect to GAN cube. Check the browser console for details."
+        "Could not identify GAN protocol. Found {} service(s): {}",
+        all_services.len(),
+        svc_list
     ))
 }
 
-/// Try to get a service by UUID, returning None on failure instead of Err.
-async fn try_get_service(
-    server: &web_sys::BluetoothRemoteGattServer,
-    uuid: &str,
-) -> Option<web_sys::BluetoothRemoteGattService> {
-    get_service(server, uuid).await.ok()
+/// Get all characteristics from a service in one GATT call.
+async fn try_get_all_chars(
+    service: &web_sys::BluetoothRemoteGattService,
+) -> Vec<web_sys::BluetoothRemoteGattCharacteristic> {
+    use wasm_bindgen::JsCast;
+    match JsFuture::from(service.get_characteristics()).await {
+        Ok(chars_js) => {
+            let arr: js_sys::Array = chars_js.unchecked_into();
+            (0..arr.length())
+                .map(|i| arr.get(i).unchecked_into())
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
-/// Try to get a characteristic from a service, returning None on failure.
-async fn try_get_char(
-    service: &web_sys::BluetoothRemoteGattService,
-    uuid: &str,
+/// Find a characteristic by UUID substring in a locally-cached list.
+/// Case-insensitive because Bluefy returns uppercase short UUIDs (e.g.
+/// "FFF5") while Chrome returns full lowercase ("0000fff5-0000-1000-...").
+fn find_char_by_uuid(
+    chars: &[web_sys::BluetoothRemoteGattCharacteristic],
+    uuid_fragment: &str,
 ) -> Option<web_sys::BluetoothRemoteGattCharacteristic> {
-    get_characteristic(service, uuid).await.ok()
+    let needle = uuid_fragment.to_lowercase();
+    chars.iter().find(|c| {
+        c.uuid().to_lowercase().contains(&needle)
+    }).cloned()
+}
+
+/// Get all primary services in one GATT call (getPrimaryServices with no
+/// argument). This matches cstimer's approach and avoids per-UUID
+/// getPrimaryService calls which Bluefy doesn't handle reliably.
+async fn get_all_services(
+    server: &web_sys::BluetoothRemoteGattServer,
+) -> Vec<web_sys::BluetoothRemoteGattService> {
+    match JsFuture::from(server.get_primary_services()).await {
+        Ok(services_js) => {
+            let arr: js_sys::Array = services_js.unchecked_into();
+            (0..arr.length())
+                .map(|i| arr.get(i).unchecked_into())
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Find a service by UUID substring in a locally-cached list.
+/// Case-insensitive for the same reason as `find_char_by_uuid`.
+fn find_service_by_uuid(
+    services: &[web_sys::BluetoothRemoteGattService],
+    uuid_fragment: &str,
+) -> Option<web_sys::BluetoothRemoteGattService> {
+    let needle = uuid_fragment.to_lowercase();
+    services.iter().find(|s| s.uuid().to_lowercase().contains(&needle)).cloned()
 }
 
 
@@ -880,6 +972,7 @@ async fn try_gan_v2_connect(
     }))
 }
 
+#[allow(dead_code)] // Kept as reference; the main path uses try_gan_v1_as_timer_with_char
 async fn try_gan_v1_as_timer(
     server: &web_sys::BluetoothRemoteGattServer,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,

@@ -655,39 +655,6 @@ pub(crate) async fn write_characteristic(
     Ok(())
 }
 
-/// Helper: discover all characteristics across all services. This mirrors the
-/// native btleplug approach of calling `device.characteristics()` to get a flat
-/// list, rather than searching by service UUID. Web Bluetooth requires services
-/// to be listed in `optionalServices` during `requestDevice()` to be accessible.
-pub(crate) async fn discover_all_characteristics(
-    server: &web_sys::BluetoothRemoteGattServer,
-) -> Vec<web_sys::BluetoothRemoteGattCharacteristic> {
-    use wasm_bindgen::JsCast;
-    let mut all_chars = Vec::new();
-    if let Ok(services_js) = JsFuture::from(server.get_primary_services()).await {
-        let services: js_sys::Array = services_js.unchecked_into();
-        for i in 0..services.length() {
-            let service: web_sys::BluetoothRemoteGattService = services.get(i).unchecked_into();
-            if let Ok(chars_js) = JsFuture::from(service.get_characteristics()).await {
-                let chars: js_sys::Array = chars_js.unchecked_into();
-                for j in 0..chars.length() {
-                    let c: web_sys::BluetoothRemoteGattCharacteristic = chars.get(j).unchecked_into();
-                    all_chars.push(c);
-                }
-            }
-        }
-    }
-    all_chars
-}
-
-/// Find a characteristic by UUID from a list of discovered characteristics.
-pub(crate) fn find_characteristic(
-    chars: &[web_sys::BluetoothRemoteGattCharacteristic],
-    uuid: &str,
-) -> Option<web_sys::BluetoothRemoteGattCharacteristic> {
-    chars.iter().find(|c| c.uuid() == uuid).cloned()
-}
-
 /// Helper: get a service by UUID string.
 pub(crate) async fn get_service(
     server: &web_sys::BluetoothRemoteGattServer,
