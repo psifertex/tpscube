@@ -433,6 +433,38 @@ impl BluetoothCube {
             let adv_event: web_sys::BluetoothAdvertisingEvent = event.unchecked_into();
             let manufacturer_data = adv_event.manufacturer_data();
 
+            // Bluefy (iOS Web Bluetooth browser) returns manufacturer_data as
+            // a raw DataView instead of a BluetoothManufacturerDataMap (Map).
+            // Detect this and extract the device key directly from the bytes.
+            // The DataView layout is: [CIC_lo, CIC_hi, ...9 bytes payload...]
+            // The device key is at payload bytes 3..9, i.e. DataView offset 5..11.
+            // See cstimer src/js/hardware/gancube.js line 162 for the same workaround.
+            let mf_raw: &JsValue = manufacturer_data.as_ref();
+            if let Some(dv) = mf_raw.dyn_ref::<js_sys::DataView>() {
+                let len = dv.byte_length() as usize;
+                web_sys::console::log_1(
+                    &format!("GAN: received advertisement (Bluefy DataView path), length={}", len).into(),
+                );
+                if len >= 11 {
+                    let mut key = [0u8; 6];
+                    for j in 0..6 {
+                        key[j] = dv.get_uint8(5 + j);
+                    }
+                    web_sys::console::log_1(
+                        &format!(
+                            "GAN: captured device key (Bluefy): {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                            key[0], key[1], key[2], key[3], key[4], key[5]
+                        ).into(),
+                    );
+                    *result_clone.lock().unwrap() = Some(key);
+                    *got_data_clone.lock().unwrap() = true;
+                    abort_clone.abort();
+                    return;
+                }
+                web_sys::console::log_1(&"GAN: Bluefy DataView too short for device key".into());
+                return;
+            }
+
             web_sys::console::log_1(
                 &format!("GAN: received advertisement, manufacturer_data size={}", manufacturer_data.size()).into(),
             );
