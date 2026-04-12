@@ -478,7 +478,11 @@ def main():
 
     os.chdir(WEB_DIR)
 
-    srv = http.server.HTTPServer((BIND, PORT), http.server.SimpleHTTPRequestHandler)
+    # Use ThreadingHTTPServer so iOS prefetch / TLS probe connections
+    # that stall don't block the server for all other clients.
+    class ThreadedHTTPS(http.server.ThreadingHTTPServer):
+        pass
+    srv = ThreadedHTTPS((BIND, PORT), http.server.SimpleHTTPRequestHandler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(certfile=str(CERT_FILE), keyfile=str(KEY_FILE))
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
