@@ -16,10 +16,6 @@ pub struct Settings {
     organize_result: Option<String>,
     import_result: Option<Result<String>>,
     export_result: Option<Result<()>>,
-    #[cfg(target_arch = "wasm32")]
-    gan_mac_address: String,
-    #[cfg(target_arch = "wasm32")]
-    gan_mac_loaded: bool,
 }
 
 impl Settings {
@@ -31,10 +27,6 @@ impl Settings {
             organize_result: None,
             import_result: None,
             export_result: None,
-            #[cfg(target_arch = "wasm32")]
-            gan_mac_address: String::new(),
-            #[cfg(target_arch = "wasm32")]
-            gan_mac_loaded: false,
         }
     }
 
@@ -44,12 +36,6 @@ impl Settings {
 
     pub fn auto_session_time(history: &History) -> i64 {
         history.setting_as_i64("auto_session_time").unwrap_or(3600)
-    }
-
-    /// Get the stored GAN cube MAC address for web Bluetooth key derivation.
-    #[cfg(target_arch = "wasm32")]
-    pub fn gan_mac_address(history: &History) -> Option<String> {
-        history.setting_as_string("gan_mac_address").filter(|s| !s.is_empty())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -320,74 +306,6 @@ impl Settings {
                         } else {
                             // Sync key is not valid, show error
                             ui.add(Label::new(RichText::new("(Not valid)").color(Theme::Red)));
-                        }
-                    }
-
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        ui.add_space(16.0);
-                        ui.section("Bluetooth");
-
-                        // Load from history on first display
-                        if !self.gan_mac_loaded {
-                            if let Some(mac) = history.setting_as_string("gan_mac_address") {
-                                self.gan_mac_address = mac;
-                            }
-                            self.gan_mac_loaded = true;
-                        }
-
-                        ui.add(
-                            Label::new(
-                                RichText::new("GAN Cube MAC Address")
-                                    .text_style(FontSize::Section.into()),
-                            ),
-                        );
-                        ui.add(
-                            Label::new(
-                                "Enter your GAN cube's Bluetooth MAC address for web \
-                                 connectivity. This is needed because Web Bluetooth cannot \
-                                 read the device key automatically. You can find the MAC \
-                                 address in your device's Bluetooth settings (e.g. \
-                                 B0:48:1E:3B:6E:47).",
-                            )
-                            .wrap_mode(egui::TextWrapMode::Wrap),
-                        );
-                        ui.add_space(4.0);
-                        ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke {
-                            width: 1.0,
-                            color: Theme::Disabled.into(),
-                        };
-                        ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke {
-                            width: 1.0,
-                            color: Theme::Disabled.into(),
-                        };
-                        ui.style_mut().visuals.widgets.active.bg_stroke = Stroke {
-                            width: 1.0,
-                            color: Theme::Content.into(),
-                        };
-                        let response = ui.text_edit_singleline(&mut self.gan_mac_address);
-                        if response.changed() {
-                            let mac = self.gan_mac_address.trim().to_string();
-                            let _ = history.set_string_setting("gan_mac_address", &mac);
-                        }
-
-                        // Validate format
-                        let trimmed = self.gan_mac_address.trim();
-                        if !trimmed.is_empty() {
-                            let bytes: Vec<u8> = trimmed
-                                .split(':')
-                                .filter_map(|s| u8::from_str_radix(s.trim(), 16).ok())
-                                .collect();
-                            if bytes.len() == 6 {
-                                ui.add(Label::new(
-                                    RichText::new("Valid MAC address").color(Theme::Green),
-                                ));
-                            } else {
-                                ui.add(Label::new(
-                                    RichText::new("Invalid format. Use XX:XX:XX:XX:XX:XX")
-                                        .color(Theme::Red),
-                                ));
-                            }
                         }
                     }
 

@@ -7,11 +7,10 @@ use crate::theme::Theme;
 use crate::timer::BluetoothEvent;
 use anyhow::{anyhow, Result};
 use egui::{
-    Color32, Direction, Label, Layout, Rect, RichText, ScrollArea, Sense, Stroke, Ui, Vec2, Window,
+    Color32, Direction, Label, Layout, Rect, RichText, Sense, Stroke, Ui, Vec2, Window,
 };
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
-use crate::settings::Settings;
 use tpscube_core::{
     BluetoothCube, BluetoothCubeEvent, BluetoothCubeState, Cube3x3x3, History, InitialCubeState,
 };
@@ -164,17 +163,12 @@ impl BluetoothState {
         }
     }
 
-    pub fn start_connect_flow(&mut self, ctx: &egui::Context, history: &History) {
+    pub fn start_connect_flow(&mut self, ctx: &egui::Context, _history: &History) {
         self.disconnect();
         self.mode = BluetoothMode::PromptConnect;
         self.error = None;
         if self.cube.is_none() {
             let cube = BluetoothCube::new();
-
-            // Set the GAN device key from the MAC address stored in settings
-            if let Some(mac) = Settings::gan_mac_address(history) {
-                cube.set_gan_device_key_from_mac(&mac);
-            }
 
             let repaint_ctx = ctx.clone();
             let move_queue = self.move_queue.clone();
