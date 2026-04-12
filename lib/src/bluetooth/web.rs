@@ -351,6 +351,27 @@ impl BluetoothCube {
                 .await
                 .map_err(|e| anyhow!("GATT connect failed: {}", js_error_string(&e)))?;
 
+        // Listen for GATT disconnection. Without this, a dropped BLE
+        // connection goes undetected — the UI would show "Connected"
+        // indefinitely while notifications silently stop. The reference
+        // gan-web-bluetooth library does the same.
+        {
+            let state_for_disconnect = state.clone();
+            let connected_device_for_disconnect = connected_device.clone();
+            let closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                web_sys::console::log_1(&"[tpscube] GATT disconnected by remote".into());
+                *state_for_disconnect.lock().unwrap() = BluetoothCubeState::Discovering;
+                *connected_device_for_disconnect.lock().unwrap() = None;
+            }) as Box<dyn Fn(web_sys::Event)>);
+            device
+                .add_event_listener_with_callback(
+                    "gattserverdisconnected",
+                    closure.as_ref().unchecked_ref(),
+                )
+                .ok();
+            closure.forget();
+        }
+
         // Captured MAC is authoritative when available; user MAC is the
         // fallback for platforms where the advertisement capture doesn't
         // work (e.g. iOS Safari / Bluefy).
@@ -476,8 +497,11 @@ impl BluetoothCube {
             }
         }
 
-        // Wait up to 5 seconds for an advertisement
-        for _ in 0..25 {
+        // Wait for an advertisement. On desktop Chrome this typically
+        // resolves within 1 second. On Bluefy/iOS it may never arrive.
+        // 10 iterations * 200ms = 2 seconds — short enough to not annoy
+        // the user, long enough for Chrome to succeed in the common case.
+        for _ in 0..10 {
             sleep_ms(200).await;
             if *got_data.lock().unwrap() {
                 break;
