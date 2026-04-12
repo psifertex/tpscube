@@ -582,9 +582,16 @@ pub(crate) async fn write_characteristic(
     characteristic: &web_sys::BluetoothRemoteGattCharacteristic,
     data: &[u8],
 ) -> Result<()> {
-    let mut buf = data.to_vec();
+    // Copy data into a standalone JS Uint8Array, then pass its ArrayBuffer.
+    // We must NOT pass a view into wasm linear memory (which is what
+    // write_value_with_u8_slice does), because if wasm memory grows between
+    // creating the Promise and the BLE stack consuming the bytes, the view
+    // becomes detached and the write fails or sends garbage. cstimer avoids
+    // this the same way: `new Uint8Array(data).buffer`.
+    let js_array = js_sys::Uint8Array::new_with_length(data.len() as u32);
+    js_array.copy_from(data);
     let promise = characteristic
-        .write_value_with_u8_slice(&mut buf)
+        .write_value_with_buffer_source(&js_array.buffer())
         .map_err(|e| anyhow!("Write call failed: {}", js_error_string(&e)))?;
     JsFuture::from(promise)
         .await
