@@ -12,6 +12,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+/// How often the connected device is polled for desync and battery updates.
+/// The native implementation polls every 10ms; on web each tick is a
+/// `setTimeout` round-trip through the JS event loop, so a slower cadence
+/// keeps the main thread free without meaningfully delaying desync detection.
+const POLL_INTERVAL_MS: u32 = 100;
+
 /// Web Bluetooth implementation of BluetoothCube.
 ///
 /// Unlike the native version, Web Bluetooth does not support background scanning.
@@ -97,7 +103,15 @@ impl BluetoothCube {
 
     pub fn synced(&self) -> Result<bool> {
         self.check_for_error()?;
-        Ok(*self.state.lock().unwrap() == BluetoothCubeState::Connected)
+        if *self.state.lock().unwrap() != BluetoothCubeState::Connected {
+            return Ok(false);
+        }
+        // Ask the driver rather than inferring from the connection state; a
+        // cube can be connected but desynced after a dropped packet.
+        match &*self.connected_device.lock().unwrap() {
+            Some(device) => Ok(device.synced()),
+            None => Ok(false),
+        }
     }
 
     pub fn disconnect(&self) {
@@ -307,6 +321,48 @@ impl BluetoothCube {
         *battery.lock().unwrap() = (cube.battery_percentage(), cube.battery_charging());
         *connected_device.lock().unwrap() = Some(cube);
         *state.lock().unwrap() = BluetoothCubeState::Connected;
+
+        // Poll the connected device the same way the native implementation does
+        // in `BluetoothCube::connect_handler`. Without this the per-device
+        // `synced` flags are never read on web, so a desync leaves the UI
+        // showing a confidently wrong cube, and the battery reading stays at
+        // whatever it was at connect time — which is nothing, since cubes
+        // report battery in a notification that arrives after this point.
+        {
+            let state = state.clone();
+            let connected_device = connected_device.clone();
+            let battery = battery.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                loop {
+                    sleep_ms(POLL_INTERVAL_MS).await;
+
+                    let device_state = {
+                        match &*connected_device.lock().unwrap() {
+                            Some(device) => {
+                                device.update();
+                                Some((
+                                    device.synced(),
+                                    device.battery_percentage(),
+                                    device.battery_charging(),
+                                ))
+                            }
+                            // Disconnected; stop polling.
+                            None => None,
+                        }
+                    };
+
+                    match device_state {
+                        Some((synced, percentage, charging)) => {
+                            if !synced {
+                                *state.lock().unwrap() = BluetoothCubeState::Desynced;
+                            }
+                            *battery.lock().unwrap() = (percentage, charging);
+                        }
+                        None => break,
+                    }
+                }
+            });
+        }
 
         Ok(())
     }
