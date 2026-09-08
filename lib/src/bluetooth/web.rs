@@ -229,8 +229,19 @@ impl BluetoothCube {
             // Web Bluetooth name prefixes are case-sensitive, so each GAN
             // capitalization variant needs its own filter. Keep this list in
             // sync with `BluetoothCubeType::from_name`.
-            "GAN", "Gan", "gan", "MG", "AiCube", "GoCube", "Rubiks", "Gi", "Mi Smart", "Hi-",
+            "GAN",
+            "Gan",
+            "gan",
+            "MG",
+            "AiCube",
+            "GoCube",
+            "Rubiks",
+            "Gi",
+            "Mi Smart",
+            "Hi-",
             "MHC",
+            "QY-QYSC",
+            "XMD-TornadoV4-i",
         ];
         let mut filters_vec: Vec<web_sys::BluetoothLeScanFilterInit> = Vec::new();
         for prefix in &name_prefixes {
@@ -249,6 +260,8 @@ impl BluetoothCube {
         for i in 0u32..256 {
             cic_array.push(&((i << 8 | 0x01).into()));
         }
+        // QiYi cubes advertise their MAC address under company ID 0x0504.
+        cic_array.push(&(0x0504u32.into()));
         let _ = js_sys::Reflect::set(
             &options,
             &"optionalManufacturerData".into(),
@@ -299,6 +312,14 @@ impl BluetoothCube {
             None
         };
 
+        // QiYi cubes need their own MAC address to complete the handshake,
+        // and it also only comes from the advertisement.
+        let qiyi_mac: Option<[u8; 6]> = if matches!(cube_type, BluetoothCubeType::QiYi) {
+            super::qiyi::capture_qiyi_mac(&device).await
+        } else {
+            None
+        };
+
         // Connect to GATT server
         let gatt = device
             .gatt()
@@ -343,6 +364,10 @@ impl BluetoothCube {
             }
             BluetoothCubeType::MoYu => {
                 super::moyu_web::moyu_web_connect(server, listeners.clone()).await?
+            }
+            BluetoothCubeType::QiYi => {
+                super::qiyi::qiyi_web_connect(server, device_name, qiyi_mac, listeners.clone())
+                    .await?
             }
         };
 

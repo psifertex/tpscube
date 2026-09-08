@@ -5,6 +5,11 @@
 #[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
 mod gan;
 
+// The `qiyi` module is laid out the same way: a shared, transport-agnostic
+// protocol state machine plus cfg-gated native and web transports.
+#[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
+mod qiyi;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod giiker;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,6 +47,8 @@ use giiker::giiker_connect;
 use gocube::gocube_connect;
 #[cfg(not(target_arch = "wasm32"))]
 use moyu::moyu_connect;
+#[cfg(not(target_arch = "wasm32"))]
+use qiyi::qiyi_cube_connect;
 #[cfg(not(target_arch = "wasm32"))]
 use clock_calibration::ClockCalibration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,6 +119,7 @@ pub enum BluetoothCubeType {
     GoCube,
     Giiker,
     MoYu,
+    QiYi,
 }
 
 impl BluetoothCubeType {
@@ -140,6 +148,10 @@ impl BluetoothCubeType {
         // Some MoYu MHC firmware omits the hyphen, so match the bare prefix.
         } else if name.starts_with("MHC") {
             Some(BluetoothCubeType::MoYu)
+        } else if qiyi::is_qiyi_device_name(name) {
+            // The QiYi Smart Cube and the XMD Tornado V4 share a protocol.
+            // Their advertised names are space padded, so the check trims.
+            Some(BluetoothCubeType::QiYi)
         } else {
             None
         }
@@ -389,6 +401,7 @@ impl BluetoothCube {
             BluetoothCubeType::GoCube => gocube_connect(peripheral, move_listener).await?,
             BluetoothCubeType::Giiker => giiker_connect(peripheral, move_listener).await?,
             BluetoothCubeType::MoYu => moyu_connect(peripheral, move_listener).await?,
+            BluetoothCubeType::QiYi => qiyi_cube_connect(peripheral, move_listener).await?,
         };
 
         init(cube.as_ref());
@@ -566,6 +579,12 @@ mod tests {
         // firmware omits the hyphen after MHC.
         assert_eq!(BluetoothCubeType::from_name("MHC-1234"), Some(MoYu));
         assert_eq!(BluetoothCubeType::from_name("MHC1234"), Some(MoYu));
+
+        // QiYi cubes pad their advertised name with spaces. The XMD
+        // Tornado V4 ships the same firmware protocol.
+        assert_eq!(BluetoothCubeType::from_name("QY-QYSC-S-A0E6       "), Some(QiYi));
+        assert_eq!(BluetoothCubeType::from_name("QY-QYSC-A-1234"), Some(QiYi));
+        assert_eq!(BluetoothCubeType::from_name("XMD-TornadoV4-i-034C "), Some(QiYi));
 
         // Non-cubes must stay unmatched.
         assert_eq!(BluetoothCubeType::from_name("Rivian Phone Key"), None);

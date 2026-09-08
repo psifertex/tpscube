@@ -232,7 +232,8 @@ impl BluetoothState {
             ui.add(Label::new(
                 RichText::new(
                     "Supported cubes: GAN (v2+), GoCube, Rubik's Connected, \
-                     Giiker, MoYu AI (MHC), MoYu AiCube",
+                     Giiker, MoYu AI (MHC), MoYu AiCube, QiYi Smart Cube, \
+                     XMD Tornado V4",
                 )
                 .color(Theme::Disabled),
             ));
