@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::platform::Manager;
 use tpscube_core::{
     AvailableDevice, BluetoothCube, BluetoothCubeEvent, BluetoothCubeState,
 };
@@ -38,12 +40,39 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         timeout: u64,
     },
+    /// Scan for *every* advertising BLE device, bypassing the cube-name
+    /// filter in `BluetoothCubeType::from_name`. Prints name, service UUIDs,
+    /// manufacturer data and RSSI. Use this when a cube does not show up in
+    /// `scan` or in the app's device list — it answers "is the cube even
+    /// advertising, and under what name?".
+    ScanRaw {
+        /// How long to scan, in seconds.
+        #[arg(long, default_value_t = 15)]
+        timeout: u64,
+        /// Only print devices whose name contains this substring
+        /// (case-insensitive). Omit to print everything.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Also print devices that advertise no name at all.
+        #[arg(long)]
+        unnamed: bool,
+    },
     /// Connect to a cube and stream move events until Ctrl-C or desync.
     Connect {
         /// Substring of device name (or Debug repr of id).
         needle: String,
         /// Maximum seconds to wait for the device to appear.
         #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
+    /// Connect to any BLE device by name substring and dump its full GATT
+    /// table (services + characteristics + properties), bypassing tpscube's
+    /// cube-type dispatch entirely. Use this to identify which protocol an
+    /// unrecognized cube actually speaks.
+    Probe {
+        /// Substring of the advertised name (case-insensitive).
+        needle: String,
+        #[arg(long, default_value_t = 20)]
         timeout: u64,
     },
     /// Connect, read the battery level once, disconnect.
@@ -72,7 +101,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { timeout } => cmd_scan(timeout),
+        Command::ScanRaw {
+            timeout,
+            filter,
+            unnamed,
+        } => cmd_scan_raw(timeout, filter, unnamed),
         Command::Connect { needle, timeout } => cmd_stream(&needle, timeout, false),
+        Command::Probe { needle, timeout } => cmd_probe(&needle, timeout),
         Command::Battery { needle, timeout } => cmd_battery(&needle, timeout),
         Command::Reset { needle, timeout } => cmd_reset(&needle, timeout),
         Command::Raw { needle, timeout } => cmd_stream(&needle, timeout, true),
@@ -354,3 +389,196 @@ fn wall_clock_ms() -> u128 {
         .unwrap_or(0)
 }
 
+
+// ----- Raw BLE scan ---------------------------------------------------------
+
+/// Unfiltered BLE scan straight against btleplug, deliberately bypassing
+/// `tpscube_core`'s `available_devices()` (which drops anything
+/// `BluetoothCubeType::from_name` does not recognize). This is the tool to
+/// reach for when a cube is blinking but never appears in the app.
+fn cmd_scan_raw(timeout: u64, filter: Option<String>, unnamed: bool) -> Result<()> {
+    let quit = Arc::new(AtomicBool::new(false));
+    install_ctrlc(quit.clone());
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let manager = Manager::new().await?;
+        let adapters = manager.adapters().await?;
+        let central = match adapters.into_iter().next() {
+            Some(adapter) => adapter,
+            None => bail!("no Bluetooth adapter found"),
+        };
+        println!("[raw] adapter: {}", central.adapter_info().await?);
+
+        central.start_scan(ScanFilter::default()).await?;
+        println!(
+            "[raw] scanning {}s (ctrl-c to stop){}…",
+            timeout,
+            match &filter {
+                Some(f) => format!(", name filter {:?}", f),
+                None => String::new(),
+            }
+        );
+
+        // Key by peripheral id so we print each device once, but re-print when
+        // its advertised name changes (some cubes advertise unnamed first).
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        while Instant::now() < deadline && !quit.load(Ordering::SeqCst) {
+            for device in central.peripherals().await? {
+                let props = match device.properties().await? {
+                    Some(props) => props,
+                    None => continue,
+                };
+                let name = props.local_name.clone().unwrap_or_default();
+                if name.is_empty() && !unnamed {
+                    continue;
+                }
+                if let Some(needle) = &filter {
+                    if !name.to_lowercase().contains(&needle.to_lowercase()) {
+                        continue;
+                    }
+                }
+
+                let id = format!("{:?}", device.id());
+                if seen.iter().any(|(sid, sname)| *sid == id && *sname == name) {
+                    continue;
+                }
+                seen.push((id.clone(), name.clone()));
+
+                println!("─────────────────────────────────────────────");
+                println!(
+                    "[raw] name={:?}{}",
+                    name,
+                    if name.is_empty() { "  (no name advertised)" } else { "" }
+                );
+                println!("      id={}", id);
+                println!("      address={} rssi={:?}", props.address, props.rssi);
+                if !props.services.is_empty() {
+                    println!("      services:");
+                    for uuid in &props.services {
+                        println!("        {}", uuid);
+                    }
+                }
+                if !props.manufacturer_data.is_empty() {
+                    println!("      manufacturer_data:");
+                    for (company, data) in &props.manufacturer_data {
+                        println!("        0x{:04x}: {}", company, hex(data));
+                    }
+                }
+                if !props.service_data.is_empty() {
+                    println!("      service_data:");
+                    for (uuid, data) in &props.service_data {
+                        println!("        {}: {}", uuid, hex(data));
+                    }
+                }
+                match classify(&name) {
+                    Some(kind) => println!("      => tpscube WOULD match this as {}", kind),
+                    None => println!(
+                        "      => tpscube would IGNORE this (no prefix match in \
+                         BluetoothCubeType::from_name)"
+                    ),
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let _ = central.stop_scan().await;
+        println!("─────────────────────────────────────────────");
+        println!("[raw] done; {} advertisement(s) printed", seen.len());
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}
+
+/// Mirror of `BluetoothCubeType::from_name`, which is crate-private in
+/// tpscube_core. Keep in sync with `lib/src/bluetooth.rs`.
+fn classify(name: &str) -> Option<&'static str> {
+    if name.starts_with("GAN") || name.starts_with("MG") || name.starts_with("AiCube") {
+        Some("GAN")
+    } else if name.starts_with("GoCube") || name.starts_with("Rubiks") {
+        Some("GoCube")
+    } else if name.starts_with("Gi") || name.starts_with("Mi Smart") {
+        Some("Giiker")
+    } else if name.starts_with("MHC-") {
+        Some("MoYu")
+    } else {
+        None
+    }
+}
+
+fn hex(data: &[u8]) -> String {
+    data.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Connect to an arbitrary BLE peripheral and dump its GATT table. Used to
+/// identify the protocol of a cube that `BluetoothCubeType::from_name` does
+/// not recognize.
+fn cmd_probe(needle: &str, timeout: u64) -> Result<()> {
+    let needle = needle.to_lowercase();
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        let manager = Manager::new().await?;
+        let central = match manager.adapters().await?.into_iter().next() {
+            Some(adapter) => adapter,
+            None => bail!("no Bluetooth adapter found"),
+        };
+        central.start_scan(ScanFilter::default()).await?;
+
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let target = loop {
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for a device matching {:?}", needle);
+            }
+            let mut found = None;
+            for device in central.peripherals().await? {
+                if let Some(props) = device.properties().await? {
+                    let name = props.local_name.clone().unwrap_or_default();
+                    if !name.is_empty() && name.to_lowercase().contains(&needle) {
+                        println!("[probe] found {:?} rssi={:?}", name, props.rssi);
+                        found = Some((device, props));
+                        break;
+                    }
+                }
+            }
+            if let Some(found) = found {
+                break found;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let (device, props) = target;
+        let _ = central.stop_scan().await;
+
+        // Show the GAN-style device key derivation, since several vendors
+        // (GAN, and MoYu's AiCube line) put a 6-byte key in company id 0x0001.
+        if let Some(data) = props.manufacturer_data.get(&1) {
+            println!("[probe] manufacturer_data[0x0001] = {}", hex(data));
+            if data.len() >= 9 {
+                println!(
+                    "[probe]   GAN-style device key (bytes 3..9) = {}",
+                    hex(&data[3..9])
+                );
+            }
+        }
+
+        println!("[probe] connecting…");
+        device.connect().await?;
+        device.discover_services().await?;
+        println!("[probe] connected, enumerating GATT:");
+
+        for service in device.services() {
+            println!("  service {}{}", service.uuid, if service.primary { " (primary)" } else { "" });
+            for ch in &service.characteristics {
+                println!("    char {}  props={:?}", ch.uuid, ch.properties);
+            }
+        }
+
+        println!("[probe] disconnecting");
+        device.disconnect().await?;
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}

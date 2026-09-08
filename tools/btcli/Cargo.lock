@@ -165,9 +165,13 @@ name = "btcli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "btleplug",
  "clap",
  "ctrlc",
+ "futures",
+ "tokio",
  "tpscube_core",
+ "uuid",
 ]
 
 [[package]]
