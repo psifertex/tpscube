@@ -110,17 +110,29 @@ pub enum BluetoothCubeType {
 
 impl BluetoothCubeType {
     pub(crate) fn from_name(name: &str) -> Option<Self> {
+        // GAN firmware is inconsistent about capitalization: the Smart Timer and
+        // Halo advertise as `Gan`/`gan` on some units, which upstream drivers all
+        // match (cstimer `gantimer.js` filters `['GAN', 'Gan', 'gan']`).
+        //
         // MoYu's `AiCube` line (MoYu AI V2 / WeiLong WRM V10 AI) speaks the GAN
         // Gen2 protocol, so it routes through the GAN implementation; only the
         // AES base key/IV differ, and those are chosen from the name in
         // `gan::cipher::GanKeySet::from_device_name`.
-        if name.starts_with("GAN") || name.starts_with("MG") || name.starts_with("AiCube") {
+        if name.starts_with("GAN")
+            || name.starts_with("Gan")
+            || name.starts_with("gan")
+            || name.starts_with("MG")
+            || name.starts_with("AiCube")
+        {
             Some(BluetoothCubeType::GAN)
         } else if name.starts_with("GoCube") || name.starts_with("Rubiks") {
             Some(BluetoothCubeType::GoCube)
-        } else if name.starts_with("Gi") || name.starts_with("Mi Smart") {
+        // `Hi-` is a rebrand of the Giiker protocol; upstream drivers treat it as
+        // the same family (cstimer `giikercube.js`).
+        } else if name.starts_with("Gi") || name.starts_with("Mi Smart") || name.starts_with("Hi-") {
             Some(BluetoothCubeType::Giiker)
-        } else if name.starts_with("MHC-") {
+        // Some MoYu MHC firmware omits the hyphen, so match the bare prefix.
+        } else if name.starts_with("MHC") {
             Some(BluetoothCubeType::MoYu)
         } else {
             None
@@ -632,13 +644,24 @@ mod tests {
 
         assert_eq!(BluetoothCubeType::from_name("GAN-a1b2c3"), Some(GAN));
         assert_eq!(BluetoothCubeType::from_name("MG12ui"), Some(GAN));
+
+        // GAN firmware varies in capitalization; the Smart Timer and Halo are
+        // reported to advertise lowercase on some units.
+        assert_eq!(BluetoothCubeType::from_name("Gan Halo"), Some(GAN));
+        assert_eq!(BluetoothCubeType::from_name("gan timer"), Some(GAN));
+
         assert_eq!(BluetoothCubeType::from_name("GoCube_ABC"), Some(GoCube));
         assert_eq!(BluetoothCubeType::from_name("Rubiks-XYZ"), Some(GoCube));
         assert_eq!(BluetoothCubeType::from_name("Gi123456"), Some(Giiker));
         assert_eq!(BluetoothCubeType::from_name("Mi Smart Magic Cube"), Some(Giiker));
 
-        // The original MoYu AI (2023) uses MoYu's own 0x1000 service.
+        // `Hi-` is the same protocol as Giiker.
+        assert_eq!(BluetoothCubeType::from_name("Hi-A1B2"), Some(Giiker));
+
+        // The original MoYu AI (2023) uses MoYu's own 0x1000 service. Some
+        // firmware omits the hyphen after MHC.
         assert_eq!(BluetoothCubeType::from_name("MHC-1234"), Some(MoYu));
+        assert_eq!(BluetoothCubeType::from_name("MHC1234"), Some(MoYu));
 
         // Non-cubes must stay unmatched.
         assert_eq!(BluetoothCubeType::from_name("Rivian Phone Key"), None);

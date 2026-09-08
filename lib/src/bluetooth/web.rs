@@ -184,7 +184,11 @@ impl BluetoothCube {
 
         // Build name prefix filters for all supported cube types
         let name_prefixes = [
-            "GAN", "MG", "AiCube", "GoCube", "Rubiks", "Gi", "Mi Smart", "MHC-",
+            // Web Bluetooth name prefixes are case-sensitive, so each GAN
+            // capitalization variant needs its own filter. Keep this list in
+            // sync with `BluetoothCubeType::from_name`.
+            "GAN", "Gan", "gan", "MG", "AiCube", "GoCube", "Rubiks", "Gi", "Mi Smart", "Hi-",
+            "MHC",
         ];
         let mut filters_vec: Vec<web_sys::BluetoothLeScanFilterInit> = Vec::new();
         for prefix in &name_prefixes {

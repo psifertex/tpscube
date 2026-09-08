@@ -494,13 +494,18 @@ fn cmd_scan_raw(timeout: u64, filter: Option<String>, unnamed: bool) -> Result<(
 /// Mirror of `BluetoothCubeType::from_name`, which is crate-private in
 /// tpscube_core. Keep in sync with `lib/src/bluetooth.rs`.
 fn classify(name: &str) -> Option<&'static str> {
-    if name.starts_with("GAN") || name.starts_with("MG") || name.starts_with("AiCube") {
+    if name.starts_with("GAN")
+        || name.starts_with("Gan")
+        || name.starts_with("gan")
+        || name.starts_with("MG")
+        || name.starts_with("AiCube")
+    {
         Some("GAN")
     } else if name.starts_with("GoCube") || name.starts_with("Rubiks") {
         Some("GoCube")
-    } else if name.starts_with("Gi") || name.starts_with("Mi Smart") {
+    } else if name.starts_with("Gi") || name.starts_with("Mi Smart") || name.starts_with("Hi-") {
         Some("Giiker")
-    } else if name.starts_with("MHC-") {
+    } else if name.starts_with("MHC") {
         Some("MoYu")
     } else {
         None
