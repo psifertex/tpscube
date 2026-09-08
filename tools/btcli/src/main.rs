@@ -507,6 +507,8 @@ fn classify(name: &str) -> Option<&'static str> {
         Some("Giiker")
     } else if name.starts_with("MHC") {
         Some("MoYu")
+    } else if name.starts_with("WCU_MY3") {
+        Some("MoYu32")
     } else {
         None
     }

@@ -42,6 +42,20 @@ pub(crate) const MOYU_AI_BASE_IV: [u8; 16] = [
     0x01, 0x44, 0x28, 0x06, 0x86, 0x21, 0x22, 0x28, 0x51, 0x05, 0x08, 0x31, 0x82, 0x02, 0x21, 0x06,
 ];
 
+/// The base key used by MoYu's `WCU_MY3*` line (WeiLong V10 AI / V11 AI).
+/// These cubes do **not** speak a GAN wire protocol at all — see
+/// `bluetooth/moyu32/` — but they do use the same two-block AES construction
+/// with the same `% 255` mixing, so they seed [`GanV2Cipher`] with their own
+/// base pair. The six mixing bytes are the cube's BLE address reversed.
+pub(crate) const MOYU32_BASE_KEY: [u8; 16] = [
+    0x15, 0x77, 0x3A, 0x5C, 0x67, 0x0E, 0x2D, 0x1F, 0x17, 0x67, 0x2A, 0x13, 0x9B, 0x67, 0x52, 0x57,
+];
+
+/// The base IV used by MoYu's `WCU_MY3*` line. See [`MOYU32_BASE_KEY`].
+pub(crate) const MOYU32_BASE_IV: [u8; 16] = [
+    0x11, 0x23, 0x26, 0x25, 0x86, 0x2A, 0x2C, 0x3B, 0x55, 0x06, 0x7F, 0x31, 0x7E, 0x67, 0x21, 0x57,
+];
+
 /// Which base key/IV pair seeds the cipher. The GAN Gen2 wire protocol is used
 /// by two vendors with different secrets, so the key set has to be chosen from
 /// the advertised device name before any packet can be decrypted.
@@ -51,6 +65,9 @@ pub(crate) enum GanKeySet {
     Gan,
     /// MoYu `AiCube` cubes running the Gen2 protocol.
     MoYuAi,
+    /// MoYu `WCU_MY3*` cubes. Not a GAN protocol, just the same cipher;
+    /// selected explicitly by `moyu32::cipher`, never by device name.
+    Moyu32,
 }
 
 impl GanKeySet {
@@ -69,6 +86,7 @@ impl GanKeySet {
         match self {
             Self::Gan => (GAN_V2_BASE_KEY, GAN_V2_BASE_IV),
             Self::MoYuAi => (MOYU_AI_BASE_KEY, MOYU_AI_BASE_IV),
+            Self::Moyu32 => (MOYU32_BASE_KEY, MOYU32_BASE_IV),
         }
     }
 }

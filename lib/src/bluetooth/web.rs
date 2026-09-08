@@ -242,6 +242,7 @@ impl BluetoothCube {
             "MHC",
             "QY-QYSC",
             "XMD-TornadoV4-i",
+            "WCU_MY3",
         ];
         let mut filters_vec: Vec<web_sys::BluetoothLeScanFilterInit> = Vec::new();
         for prefix in &name_prefixes {
@@ -253,12 +254,15 @@ impl BluetoothCube {
         let options = web_sys::RequestDeviceOptions::new();
         options.set_filters(&filters_vec);
 
-        // Request optional manufacturer data for GAN cubes.
+        // Request optional manufacturer data.
         // GAN cubes use company IDs of the form (i << 8) | 0x01 for i in 0..256.
+        // MoYu WCU cubes use 0x0000 while unbound and (accountId >> 16) once
+        // bound, whose low byte is 0x00, so ask for (i << 8) | 0x00 as well.
         // This field is not yet in web-sys bindings, so we set it via Reflect.
         let cic_array = js_sys::Array::new();
         for i in 0u32..256 {
             cic_array.push(&((i << 8 | 0x01).into()));
+            cic_array.push(&((i << 8).into()));
         }
         // QiYi cubes advertise their MAC address under company ID 0x0504.
         cic_array.push(&(0x0504u32.into()));
@@ -280,6 +284,7 @@ impl BluetoothCube {
             "0000fd50-0000-1000-8000-00805f9b34fb",
             "8653000a-43e6-47b7-9cb0-5fc21d4ae340",
             "00000010-0000-fff7-fff6-fff5fff4fff0",
+            "0783b03e-7735-b5a0-1760-a305d2795cb0",
         ]
         .iter()
         .map(|s| js_sys::JsString::from(*s))
@@ -306,10 +311,14 @@ impl BluetoothCube {
         // Chrome the advertisement usually arrives within a second. On
         // iOS (Bluefy) the API works via the DataView workaround (see
         // the closure below for details).
-        let device_key: Option<[u8; 6]> = if matches!(cube_type, BluetoothCubeType::GAN) {
-            Self::try_capture_manufacturer_data(&device).await
-        } else {
-            None
+        //
+        // MoYu32 cubes need the same thing, but their manufacturer data
+        // has a different shape and a variable company id, so they bring
+        // their own capture (see `moyu32::web`).
+        let device_key: Option<[u8; 6]> = match cube_type {
+            BluetoothCubeType::GAN => Self::try_capture_manufacturer_data(&device).await,
+            BluetoothCubeType::MoYu32 => super::moyu32::moyu32_capture_mac(&device).await,
+            _ => None,
         };
 
         // QiYi cubes need their own MAC address to complete the handshake,
@@ -368,6 +377,15 @@ impl BluetoothCube {
             BluetoothCubeType::QiYi => {
                 super::qiyi::qiyi_web_connect(server, device_name, qiyi_mac, listeners.clone())
                     .await?
+            }
+            BluetoothCubeType::MoYu32 => {
+                super::moyu32::moyu32_web_connect(
+                    server,
+                    device_name,
+                    device_key,
+                    listeners.clone(),
+                )
+                .await?
             }
         };
 

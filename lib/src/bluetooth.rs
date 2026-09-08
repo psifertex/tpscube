@@ -10,6 +10,12 @@ mod gan;
 #[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
 mod qiyi;
 
+// MoYu's `WCU_MY3*` cubes (WeiLong V10/V11 AI). Same layout as `gan`: a
+// shared transport-agnostic protocol module plus cfg-gated native and
+// wasm transports.
+#[cfg(any(feature = "bluetooth", feature = "web-bluetooth"))]
+mod moyu32;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod giiker;
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +55,8 @@ use gocube::gocube_connect;
 use moyu::moyu_connect;
 #[cfg(not(target_arch = "wasm32"))]
 use qiyi::qiyi_cube_connect;
+#[cfg(not(target_arch = "wasm32"))]
+use moyu32::moyu32_connect;
 #[cfg(not(target_arch = "wasm32"))]
 use clock_calibration::ClockCalibration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -120,6 +128,8 @@ pub enum BluetoothCubeType {
     Giiker,
     MoYu,
     QiYi,
+    /// MoYu WeiLong V10 AI / V11 AI, advertised as `WCU_MY3*`.
+    MoYu32,
 }
 
 impl BluetoothCubeType {
@@ -152,6 +162,12 @@ impl BluetoothCubeType {
             // The QiYi Smart Cube and the XMD Tornado V4 share a protocol.
             // Their advertised names are space padded, so the check trims.
             Some(BluetoothCubeType::QiYi)
+        } else if name.starts_with("WCU_MY3") {
+            // MoYu's WeiLong AI line. The vendor's own filter is the
+            // broader `WCU_`, but that also matches the WeiPo V5 AI 2x2
+            // and tpscube's Bluetooth cube state is 3x3 only, so stay
+            // narrow enough to exclude it.
+            Some(BluetoothCubeType::MoYu32)
         } else {
             None
         }
@@ -402,6 +418,7 @@ impl BluetoothCube {
             BluetoothCubeType::Giiker => giiker_connect(peripheral, move_listener).await?,
             BluetoothCubeType::MoYu => moyu_connect(peripheral, move_listener).await?,
             BluetoothCubeType::QiYi => qiyi_cube_connect(peripheral, move_listener).await?,
+            BluetoothCubeType::MoYu32 => moyu32_connect(peripheral, move_listener).await?,
         };
 
         init(cube.as_ref());
@@ -586,9 +603,12 @@ mod tests {
         assert_eq!(BluetoothCubeType::from_name("QY-QYSC-A-1234"), Some(QiYi));
         assert_eq!(BluetoothCubeType::from_name("XMD-TornadoV4-i-034C "), Some(QiYi));
 
+        // MoYu's WeiLong V10 AI / V11 AI line speaks its own protocol.
+        assert_eq!(BluetoothCubeType::from_name("WCU_MY32_A388"), Some(MoYu32));
+        assert_eq!(BluetoothCubeType::from_name("WCU_MY33_AF9E"), Some(MoYu32));
+
         // Non-cubes must stay unmatched.
         assert_eq!(BluetoothCubeType::from_name("Rivian Phone Key"), None);
-        assert_eq!(BluetoothCubeType::from_name("WCU_MY32_A388"), None);
         assert_eq!(BluetoothCubeType::from_name(""), None);
     }
 }
