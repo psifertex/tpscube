@@ -12,6 +12,33 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+use super::clock_calibration::ClockCalibration;
+
+thread_local! {
+    /// Move-timing calibration for the active connection. The native backend
+    /// keeps this per-connection in its connect handler; on web the drivers
+    /// dispatch straight to the listener list, so the calibration lives here
+    /// at the single choke point every driver already funnels through. wasm is
+    /// single-threaded, so a thread-local is sound and avoids changing the
+    /// `dispatch_moves` signature that every cube driver calls.
+    static CLOCK_CALIBRATION: std::cell::RefCell<Option<ClockCalibration>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Start a fresh calibration for a newly connected cube.
+fn reset_clock_calibration(clock_ratio: f64, clock_ratio_range: (f64, f64)) {
+    CLOCK_CALIBRATION.with(|cal| {
+        *cal.borrow_mut() = Some(ClockCalibration::new(clock_ratio, clock_ratio_range));
+    });
+}
+
+/// Drop calibration state when the cube goes away.
+fn clear_clock_calibration() {
+    CLOCK_CALIBRATION.with(|cal| {
+        *cal.borrow_mut() = None;
+    });
+}
+
 /// How often the connected device is polled for desync and battery updates.
 /// The native implementation polls every 10ms; on web each tick is a
 /// `setTimeout` round-trip through the JS event loop, so a slower cadence
@@ -121,6 +148,7 @@ impl BluetoothCube {
         *self.state.lock().unwrap() = BluetoothCubeState::Discovering;
         *self.connected_name.lock().unwrap() = None;
         *self.battery.lock().unwrap() = (None, None);
+        clear_clock_calibration();
     }
 
     pub fn register_move_listener<F: Fn(BluetoothCubeEvent) + 'static>(
@@ -319,6 +347,7 @@ impl BluetoothCube {
         };
 
         *battery.lock().unwrap() = (cube.battery_percentage(), cube.battery_charging());
+        reset_clock_calibration(cube.estimated_clock_ratio(), cube.clock_ratio_range());
         *connected_device.lock().unwrap() = Some(cube);
         *state.lock().unwrap() = BluetoothCubeState::Connected;
 
@@ -705,5 +734,12 @@ pub(crate) fn dispatch_moves(
     moves: Vec<TimedMove>,
     state: Cube3x3x3,
 ) {
+    // Cube clocks drift against real time, so timings are corrected here before
+    // reaching any listener — the same treatment the native backend applies in
+    // its connect handler.
+    let moves = CLOCK_CALIBRATION.with(|cal| match cal.borrow_mut().as_mut() {
+        Some(calibration) => calibration.adjust(moves),
+        None => moves,
+    });
     dispatch_event(listeners, BluetoothCubeEvent::Move(moves, state));
 }
