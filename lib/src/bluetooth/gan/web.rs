@@ -312,8 +312,10 @@ async fn try_gan_v4_connect(
     // anyway. cstimer doesn't do this either.
     let device_key: [u8; 6] = user_device_key.unwrap_or_else(|| {
         web_sys::console::log_1(
-            &"GAN v4: no device key available, using zeros. \
-              Set your GAN cube MAC address in Settings for web support."
+            &"GAN v4: no device key available, using zeros. The MAC is \
+              captured from advertisement manufacturer data during scanning; \
+              if this persists, the cube stopped advertising before it was \
+              read \u{2014} turn a face and reconnect."
                 .into(),
         );
         [0u8; 6]
@@ -442,8 +444,10 @@ async fn try_gan_v3_connect(
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
     let device_key: [u8; 6] = user_device_key.unwrap_or_else(|| {
         web_sys::console::log_1(
-            &"GAN v3: no device key available, using zeros. \
-              Set your GAN cube MAC address in Settings for web support."
+            &"GAN v3: no device key available, using zeros. The MAC is \
+              captured from advertisement manufacturer data during scanning; \
+              if this persists, the cube stopped advertising before it was \
+              read \u{2014} turn a face and reconnect."
                 .into(),
         );
         [0u8; 6]
@@ -759,8 +763,10 @@ async fn try_gan_v2_connect(
             Ok(key) => key,
             Err(_) => {
                 web_sys::console::log_1(
-                    &"GAN v2: no device key available, using zeros. \
-                      Set your GAN cube MAC address in Settings for web support."
+                    &"GAN v2: no device key available, using zeros. The MAC \
+                      is captured from advertisement manufacturer data during \
+                      scanning; if this persists, the cube stopped advertising \
+                      before it was read \u{2014} turn a face and reconnect."
                         .into(),
                 );
                 [0u8; 6]
