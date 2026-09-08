@@ -1,4 +1,4 @@
-use crate::bluetooth::gan::cipher::{GanV2Cipher, GanV3Cipher};
+use crate::bluetooth::gan::cipher::{derive_key_iv, GanKeySet, GanV2Cipher, GanV3Cipher};
 use crate::bluetooth::gan::gen34_protocol::{Gen34Event, Gen34Protocol, Gen3Wire, Gen4Wire};
 use crate::bluetooth::{BluetoothCubeDevice, BluetoothCubeEvent};
 use crate::common::{
@@ -401,20 +401,16 @@ impl GANCubeVersion2 {
             return Err(anyhow!("Manufacturer data missing device identifier"));
         };
 
-        const GAN_V2_KEY: [u8; 16] = [
-            0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11,
-            0x12, 0x53,
-        ];
-        const GAN_V2_IV: [u8; 16] = [
-            0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12,
-            0x02, 0x43,
-        ];
-        let mut key = GAN_V2_KEY.clone();
-        let mut iv = GAN_V2_IV.clone();
-        for (idx, byte) in device_key.iter().enumerate() {
-            key[idx] = ((key[idx] as u16 + *byte as u16) % 255) as u8;
-            iv[idx] = ((iv[idx] as u16 + *byte as u16) % 255) as u8;
+        // GAN cubes and MoYu `AiCube` cubes share this protocol but seed the
+        // cipher from different base key/IV pairs, selected by advertised name.
+        let key_set = GanKeySet::from_device_name(props.local_name.as_deref().unwrap_or(""));
+        if gan_debug() {
+            eprintln!(
+                "GAN: Gen2 name={:?} key_set={:?} device_key={:02x?}",
+                props.local_name, key_set, device_key
+            );
         }
+        let (key, iv) = derive_key_iv(&device_key, key_set);
         let cipher = GANCubeVersion2Cipher {
             device_key: key,
             device_iv: iv,
@@ -876,7 +872,7 @@ impl GANCubeVersion3 {
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
     ) -> Result<Self> {
         let device_key = read_gen34_device_key(&device).await?;
-        let cipher = GanV3Cipher::from_device_key(&device_key);
+        let cipher = GanV3Cipher::from_device_key(&device_key, GanKeySet::Gan);
 
         let state = Arc::new(Mutex::new(Cube3x3x3::new()));
         let battery_percentage: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
@@ -1048,7 +1044,7 @@ impl GANCubeVersion4 {
         move_listener: Box<dyn Fn(BluetoothCubeEvent) + Send + 'static>,
     ) -> Result<Self> {
         let device_key = read_gen34_device_key(&device).await?;
-        let cipher = GanV2Cipher::from_device_key(&device_key);
+        let cipher = GanV2Cipher::from_device_key(&device_key, GanKeySet::Gan);
 
         let state = Arc::new(Mutex::new(Cube3x3x3::new()));
         let battery_percentage: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));

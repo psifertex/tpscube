@@ -1,4 +1,4 @@
-use crate::bluetooth::gan::cipher::{GanV2Cipher, GanV3Cipher};
+use crate::bluetooth::gan::cipher::{derive_key_iv, GanKeySet, GanV2Cipher, GanV3Cipher};
 use crate::bluetooth::gan::gen34_protocol::{
     Gen34Event, Gen34Protocol, Gen34Wire, Gen3Wire, Gen4Wire,
 };
@@ -319,7 +319,7 @@ async fn try_gan_v4_connect(
         [0u8; 6]
     });
 
-    let cipher = GanV2Cipher::from_device_key(&device_key);
+    let cipher = GanV2Cipher::from_device_key(&device_key, GanKeySet::Gan);
 
     let state = Arc::new(Mutex::new(Cube3x3x3::new()));
     let battery_percentage: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
@@ -449,7 +449,7 @@ async fn try_gan_v3_connect(
         [0u8; 6]
     });
 
-    let cipher = GanV3Cipher::from_device_key(&device_key);
+    let cipher = GanV3Cipher::from_device_key(&device_key, GanKeySet::Gan);
 
     let state = Arc::new(Mutex::new(Cube3x3x3::new()));
     let battery_percentage: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
@@ -596,7 +596,7 @@ impl BluetoothCubeDevice for GANSmartTimerWeb {
 
 pub(crate) async fn gan_web_connect(
     server: web_sys::BluetoothRemoteGattServer,
-    _device_name: String,
+    device_name: String,
     user_device_key: Option<[u8; 6]>,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
@@ -638,13 +638,22 @@ pub(crate) async fn gan_web_connect(
         }
     }
 
-    // Try Gen2 (GAN356i v2 / GAN356 XS).
+    // Try Gen2 (GAN356i v2 / GAN356 XS, and MoYu AiCube which reuses this
+    // protocol with a different cipher key set — hence passing the name).
     if let Some(svc) = find_service_by_uuid(&all_services, "6e400001") {
         let chars = try_get_all_chars(&svc).await;
         let write_char = find_char_by_uuid(&chars, "28be4a4a");
         let read_char = find_char_by_uuid(&chars, "28be4cb6");
         if let (Some(w), Some(r)) = (write_char, read_char) {
-            return try_gan_v2_connect(&server, r, w, user_device_key, listeners).await;
+            return try_gan_v2_connect(
+                &server,
+                r,
+                w,
+                &device_name,
+                user_device_key,
+                listeners,
+            )
+            .await;
         }
     }
 
@@ -734,6 +743,7 @@ async fn try_gan_v2_connect(
     server: &web_sys::BluetoothRemoteGattServer,
     read_char: web_sys::BluetoothRemoteGattCharacteristic,
     write_char: web_sys::BluetoothRemoteGattCharacteristic,
+    device_name: &str,
     user_device_key: Option<[u8; 6]>,
     listeners: Arc<Mutex<HashMap<MoveListenerHandle, Box<dyn Fn(BluetoothCubeEvent) + 'static>>>>,
 ) -> Result<Box<dyn BluetoothCubeDevice>> {
@@ -758,20 +768,13 @@ async fn try_gan_v2_connect(
         }
     };
 
-    const GAN_V2_KEY: [u8; 16] = [
-        0x01, 0x02, 0x42, 0x28, 0x31, 0x91, 0x16, 0x07, 0x20, 0x05, 0x18, 0x54, 0x42, 0x11,
-        0x12, 0x53,
-    ];
-    const GAN_V2_IV: [u8; 16] = [
-        0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12,
-        0x02, 0x43,
-    ];
-    let mut key = GAN_V2_KEY;
-    let mut iv = GAN_V2_IV;
-    for (idx, byte) in device_key.iter().enumerate() {
-        key[idx] = ((key[idx] as u16 + *byte as u16) % 255) as u8;
-        iv[idx] = ((iv[idx] as u16 + *byte as u16) % 255) as u8;
-    }
+    // GAN cubes and MoYu `AiCube` cubes share this protocol but seed the cipher
+    // from different base key/IV pairs, selected by advertised name.
+    let key_set = GanKeySet::from_device_name(device_name);
+    web_sys::console::log_1(
+        &format!("GAN v2: name={:?} key_set={:?}", device_name, key_set).into(),
+    );
+    let (key, iv) = derive_key_iv(&device_key, key_set);
     let cipher = GANCubeVersion2Cipher {
         device_key: key,
         device_iv: iv,

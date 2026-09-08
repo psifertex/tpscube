@@ -28,12 +28,56 @@ pub(crate) const GAN_V2_BASE_IV: [u8; 16] = [
     0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12, 0x02, 0x43,
 ];
 
-/// Mix the 6-byte device key into the base key and IV. This is the same
-/// derivation used by all of Gen2, Gen3 and Gen4 — the differences between
-/// those protocols are all above the cipher layer.
-pub(crate) fn derive_key_iv(device_key: &[u8; 6]) -> ([u8; 16], [u8; 16]) {
-    let mut key = GAN_V2_BASE_KEY;
-    let mut iv = GAN_V2_BASE_IV;
+/// The base key used by MoYu's `AiCube` line (MoYu AI V2 / WeiLong WRM V10 AI).
+/// These cubes speak the GAN Gen2 protocol byte-for-byte — same GATT service
+/// (`6e400001-b5a3-f393-e0a9-e50e24dc4179`), same characteristics, same packet
+/// layout, and the same 6-byte device key in manufacturer data company id
+/// 0x0001 — but seed the AES cipher from a different base pair.
+pub(crate) const MOYU_AI_BASE_KEY: [u8; 16] = [
+    0x05, 0x12, 0x02, 0x45, 0x02, 0x01, 0x29, 0x56, 0x12, 0x78, 0x12, 0x76, 0x81, 0x01, 0x08, 0x03,
+];
+
+/// The base IV used by MoYu's `AiCube` line. See [`MOYU_AI_BASE_KEY`].
+pub(crate) const MOYU_AI_BASE_IV: [u8; 16] = [
+    0x01, 0x44, 0x28, 0x06, 0x86, 0x21, 0x22, 0x28, 0x51, 0x05, 0x08, 0x31, 0x82, 0x02, 0x21, 0x06,
+];
+
+/// Which base key/IV pair seeds the cipher. The GAN Gen2 wire protocol is used
+/// by two vendors with different secrets, so the key set has to be chosen from
+/// the advertised device name before any packet can be decrypted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GanKeySet {
+    /// GAN's own cubes: Gen2, Gen3 and Gen4.
+    Gan,
+    /// MoYu `AiCube` cubes running the Gen2 protocol.
+    MoYuAi,
+}
+
+impl GanKeySet {
+    /// Choose the key set from the advertised BLE name. MoYu's Gen2-compatible
+    /// cubes advertise as `AiCube…` (e.g. `AiCube2MT`); everything else routed
+    /// here is a GAN cube (`GAN…` / `MG…`).
+    pub(crate) fn from_device_name(name: &str) -> Self {
+        if name.starts_with("AiCube") {
+            Self::MoYuAi
+        } else {
+            Self::Gan
+        }
+    }
+
+    fn base_key_iv(self) -> ([u8; 16], [u8; 16]) {
+        match self {
+            Self::Gan => (GAN_V2_BASE_KEY, GAN_V2_BASE_IV),
+            Self::MoYuAi => (MOYU_AI_BASE_KEY, MOYU_AI_BASE_IV),
+        }
+    }
+}
+
+/// Mix the 6-byte device key into the base key and IV for `key_set`. This is
+/// the same derivation used by all of Gen2, Gen3 and Gen4 — the differences
+/// between those protocols are all above the cipher layer.
+pub(crate) fn derive_key_iv(device_key: &[u8; 6], key_set: GanKeySet) -> ([u8; 16], [u8; 16]) {
+    let (mut key, mut iv) = key_set.base_key_iv();
     for (idx, byte) in device_key.iter().enumerate() {
         key[idx] = ((key[idx] as u16 + *byte as u16) % 255) as u8;
         iv[idx] = ((iv[idx] as u16 + *byte as u16) % 255) as u8;
@@ -57,8 +101,8 @@ impl GanV2Cipher {
         }
     }
 
-    pub(crate) fn from_device_key(device_key: &[u8; 6]) -> Self {
-        let (key, iv) = derive_key_iv(device_key);
+    pub(crate) fn from_device_key(device_key: &[u8; 6], key_set: GanKeySet) -> Self {
+        let (key, iv) = derive_key_iv(device_key, key_set);
         Self {
             device_key: key,
             device_iv: iv,
@@ -138,8 +182,8 @@ impl GanV3Cipher {
         }
     }
 
-    pub(crate) fn from_device_key(device_key: &[u8; 6]) -> Self {
-        let (key, iv) = derive_key_iv(device_key);
+    pub(crate) fn from_device_key(device_key: &[u8; 6], key_set: GanKeySet) -> Self {
+        let (key, iv) = derive_key_iv(device_key, key_set);
         Self {
             device_key: key,
             device_iv: iv,
@@ -170,5 +214,69 @@ impl GanV3Cipher {
         let mut result = [0u8; 16];
         result.copy_from_slice(&block);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_set_selected_from_device_name() {
+        // MoYu's Gen2-compatible line.
+        assert_eq!(GanKeySet::from_device_name("AiCube2MT"), GanKeySet::MoYuAi);
+        assert_eq!(GanKeySet::from_device_name("AiCubeXXX"), GanKeySet::MoYuAi);
+        // Everything else routed to the GAN implementation.
+        assert_eq!(GanKeySet::from_device_name("GAN-a1b2c3"), GanKeySet::Gan);
+        assert_eq!(GanKeySet::from_device_name("GANicXXX"), GanKeySet::Gan);
+        assert_eq!(GanKeySet::from_device_name("MG12ui"), GanKeySet::Gan);
+        assert_eq!(GanKeySet::from_device_name(""), GanKeySet::Gan);
+    }
+
+    #[test]
+    fn derivation_differs_by_key_set() {
+        // The device key comes from manufacturer data company id 0x0001,
+        // bytes 3..9. This is the real key advertised by an AiCube2MT.
+        let device_key = [0x79, 0x23, 0x00, 0x75, 0x70, 0x83];
+
+        let (gan_key, gan_iv) = derive_key_iv(&device_key, GanKeySet::Gan);
+        let (moyu_key, moyu_iv) = derive_key_iv(&device_key, GanKeySet::MoYuAi);
+        assert_ne!(gan_key, moyu_key);
+        assert_ne!(gan_iv, moyu_iv);
+
+        // Only the first 6 bytes are mixed; the tail is the untouched base.
+        assert_eq!(gan_key[6..], GAN_V2_BASE_KEY[6..]);
+        assert_eq!(moyu_key[6..], MOYU_AI_BASE_KEY[6..]);
+        assert_eq!(gan_iv[6..], GAN_V2_BASE_IV[6..]);
+        assert_eq!(moyu_iv[6..], MOYU_AI_BASE_IV[6..]);
+
+        // Mixing is (base + device_key) % 255, per byte.
+        for idx in 0..6 {
+            assert_eq!(
+                moyu_key[idx],
+                ((MOYU_AI_BASE_KEY[idx] as u16 + device_key[idx] as u16) % 255) as u8
+            );
+            assert_eq!(
+                moyu_iv[idx],
+                ((MOYU_AI_BASE_IV[idx] as u16 + device_key[idx] as u16) % 255) as u8
+            );
+        }
+    }
+
+    #[test]
+    fn v2_cipher_round_trips_with_moyu_key_set() {
+        let device_key = [0x79, 0x23, 0x00, 0x75, 0x70, 0x83];
+        let cipher = GanV2Cipher::from_device_key(&device_key, GanKeySet::MoYuAi);
+
+        // Gen2 packets are 20 bytes.
+        let plaintext: Vec<u8> = (0..20u8).collect();
+        let encrypted = cipher.encrypt(&plaintext).unwrap();
+        assert_ne!(encrypted, plaintext);
+        assert_eq!(cipher.decrypt(&encrypted).unwrap(), plaintext);
+
+        // A packet encrypted for MoYu must not decrypt to the same plaintext
+        // under GAN's key set — this is exactly why the cube was unusable.
+        let gan_cipher = GanV2Cipher::from_device_key(&device_key, GanKeySet::Gan);
+        assert_ne!(gan_cipher.decrypt(&encrypted).unwrap(), plaintext);
     }
 }

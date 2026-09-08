@@ -110,7 +110,11 @@ pub enum BluetoothCubeType {
 
 impl BluetoothCubeType {
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        if name.starts_with("GAN") || name.starts_with("MG") {
+        // MoYu's `AiCube` line (MoYu AI V2 / WeiLong WRM V10 AI) speaks the GAN
+        // Gen2 protocol, so it routes through the GAN implementation; only the
+        // AES base key/IV differ, and those are chosen from the name in
+        // `gan::cipher::GanKeySet::from_device_name`.
+        if name.starts_with("GAN") || name.starts_with("MG") || name.starts_with("AiCube") {
             Some(BluetoothCubeType::GAN)
         } else if name.starts_with("GoCube") || name.starts_with("Rubiks") {
             Some(BluetoothCubeType::GoCube)
@@ -610,3 +614,35 @@ impl Drop for BluetoothCube {
 // ============================================================
 #[cfg(target_arch = "wasm32")]
 pub use web::BluetoothCube;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cube_type_from_advertised_name() {
+        use BluetoothCubeType::*;
+
+        // MoYu's AiCube line speaks the GAN Gen2 protocol, so it must route to
+        // the GAN implementation rather than the MHC-era MoYu one. Regression
+        // test: an `AiCube2MT` previously returned None and was silently
+        // dropped from the device list.
+        assert_eq!(BluetoothCubeType::from_name("AiCube2MT"), Some(GAN));
+        assert_eq!(BluetoothCubeType::from_name("AiCubeXXX"), Some(GAN));
+
+        assert_eq!(BluetoothCubeType::from_name("GAN-a1b2c3"), Some(GAN));
+        assert_eq!(BluetoothCubeType::from_name("MG12ui"), Some(GAN));
+        assert_eq!(BluetoothCubeType::from_name("GoCube_ABC"), Some(GoCube));
+        assert_eq!(BluetoothCubeType::from_name("Rubiks-XYZ"), Some(GoCube));
+        assert_eq!(BluetoothCubeType::from_name("Gi123456"), Some(Giiker));
+        assert_eq!(BluetoothCubeType::from_name("Mi Smart Magic Cube"), Some(Giiker));
+
+        // The original MoYu AI (2023) uses MoYu's own 0x1000 service.
+        assert_eq!(BluetoothCubeType::from_name("MHC-1234"), Some(MoYu));
+
+        // Non-cubes must stay unmatched.
+        assert_eq!(BluetoothCubeType::from_name("Rivian Phone Key"), None);
+        assert_eq!(BluetoothCubeType::from_name("WCU_MY32_A388"), None);
+        assert_eq!(BluetoothCubeType::from_name(""), None);
+    }
+}

@@ -184,7 +184,7 @@ impl BluetoothCube {
 
         // Build name prefix filters for all supported cube types
         let name_prefixes = [
-            "GAN", "MG", "GoCube", "Rubiks", "Gi", "Mi Smart", "MHC-",
+            "GAN", "MG", "AiCube", "GoCube", "Rubiks", "Gi", "Mi Smart", "MHC-",
         ];
         let mut filters_vec: Vec<web_sys::BluetoothLeScanFilterInit> = Vec::new();
         for prefix in &name_prefixes {
