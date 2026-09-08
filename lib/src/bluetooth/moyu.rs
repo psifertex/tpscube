@@ -72,21 +72,29 @@ impl MoYuCube {
                             | ((turn[3] as u32) << 8)
                             | (turn[2] as u32)) as f64
                             / 65536.0;
-                        let face = turn[4];
+                        let face = turn[4] as usize;
                         let direction = turn[5] as i8 / 36;
 
+                        // A corrupt face byte would panic the indexing below and
+                        // silently kill this notification task, taking the cube
+                        // offline mid-solve. Treat it as a desync instead.
+                        if face >= Self::FACES.len() {
+                            *synced_copy.lock().unwrap() = false;
+                            continue;
+                        }
+
                         // Decode face rotation into moves
-                        let old_rotation = face_rotations[face as usize];
+                        let old_rotation = face_rotations[face];
                         let new_rotation = old_rotation + direction;
-                        face_rotations[face as usize] = (new_rotation + 9) % 9;
+                        face_rotations[face] = (new_rotation + 9) % 9;
                         let mv = if old_rotation >= 5 && new_rotation <= 4 {
                             Some(
-                                Move::from_face_and_rotation(Self::FACES[face as usize], -1)
+                                Move::from_face_and_rotation(Self::FACES[face], -1)
                                     .unwrap(),
                             )
                         } else if old_rotation <= 4 && new_rotation >= 5 {
                             Some(
-                                Move::from_face_and_rotation(Self::FACES[face as usize], 1).unwrap(),
+                                Move::from_face_and_rotation(Self::FACES[face], 1).unwrap(),
                             )
                         } else {
                             None
